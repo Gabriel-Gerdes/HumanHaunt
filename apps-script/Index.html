@@ -1,0 +1,694 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #111827;
+        color: #f9fafb;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+
+      button,
+      input,
+      select {
+        border: 0;
+        border-radius: 10px;
+        font: inherit;
+        font-size: 16px;
+        padding: 10px 12px;
+      }
+
+      button {
+        background: #22c55e;
+        color: #052e16;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      button.secondary {
+        background: #fbbf24;
+        color: #451a03;
+      }
+
+      button.danger {
+        background: #ef4444;
+        color: #450a0a;
+      }
+
+      button:disabled {
+        background: #4b5563;
+        color: #d1d5db;
+        cursor: not-allowed;
+      }
+
+      input,
+      select {
+        background: #1f2937;
+        color: #f9fafb;
+        min-width: 180px;
+      }
+
+      .page {
+        margin: 0 auto;
+        max-width: 980px;
+      }
+
+      .header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+
+      .title {
+        margin: 0;
+      }
+
+      .controls {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .team-picker {
+        margin-bottom: 20px;
+      }
+
+      .team-picker-title {
+        color: #cbd5e1;
+        font-size: 14px;
+        font-weight: 700;
+        margin: 0 0 10px;
+      }
+
+      .team-buttons {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      }
+
+      .team-button {
+        background: #1f2937;
+        border: 1px solid #374151;
+        color: #f9fafb;
+        min-height: 48px;
+      }
+
+      .team-button.active {
+        background: #22c55e;
+        border-color: #86efac;
+        color: #052e16;
+      }
+
+      .team-button.admin-team {
+        border-color: #2563eb;
+      }
+
+      .team-button.admin-team.active {
+        background: #60a5fa;
+        border-color: #bfdbfe;
+        color: #082f49;
+      }
+
+      .status {
+        color: #cbd5e1;
+        margin: 0 0 20px;
+        min-height: 24px;
+      }
+
+      .scores {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        margin-bottom: 24px;
+      }
+
+      .admin-panel {
+        background: #172554;
+        border: 1px solid #2563eb;
+        border-radius: 16px;
+        display: none;
+        margin-bottom: 24px;
+        padding: 16px;
+      }
+
+      .admin-panel.visible {
+        display: block;
+      }
+
+      .admin-panel h2 {
+        margin: 0 0 12px;
+      }
+
+      .admin-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+
+      .admin-form:last-child {
+        margin-bottom: 0;
+      }
+
+      .admin-form input[name="taskName"] {
+        flex: 1 1 260px;
+      }
+
+      .admin-form input[name="points"] {
+        min-width: 100px;
+        width: 120px;
+      }
+
+      .score-card,
+      .task-card {
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 16px;
+        box-shadow: 0 12px 24px rgb(0 0 0 / 18%);
+      }
+
+      .score-card {
+        padding: 14px;
+      }
+
+      .score-team {
+        color: #cbd5e1;
+        font-size: 14px;
+      }
+
+      .score-value {
+        font-size: 28px;
+        font-weight: 800;
+        margin-top: 4px;
+      }
+
+      .tasks {
+        display: grid;
+        gap: 14px;
+      }
+
+      .task-card {
+        align-items: center;
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr auto auto auto auto;
+        padding: 16px;
+      }
+
+      .task-title {
+        font-size: 18px;
+        font-weight: 800;
+        margin: 0 0 4px;
+      }
+
+      .task-meta {
+        color: #cbd5e1;
+        margin: 0;
+      }
+
+      .claimed {
+        color: #fbbf24;
+        font-weight: 700;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 14px;
+        }
+
+        .header {
+          display: block;
+        }
+
+        .controls {
+          align-items: stretch;
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+
+        .controls button,
+        .admin-form button,
+        .admin-form input,
+        .admin-form select {
+          min-height: 48px;
+          width: 100%;
+        }
+
+        .scores {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .team-buttons {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .task-card {
+          grid-template-columns: 1fr;
+        }
+
+        .task-card button {
+          min-height: 48px;
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="header">
+        <div>
+          <h1 class="title">Human Haunt Lockout</h1>
+          <p class="status" id="status">Loading tasks...</p>
+        </div>
+
+        <div class="controls">
+          <button type="button" onclick="loadGameState()">Refresh</button>
+        </div>
+      </section>
+
+      <section class="team-picker">
+        <p class="team-picker-title">Quick team select</p>
+        <div class="team-buttons" id="teamButtons"></div>
+      </section>
+
+      <section class="scores" id="scores"></section>
+      <section class="admin-panel" id="adminPanel">
+        <h2>Admin</h2>
+        <form class="admin-form" id="adminForm">
+          <input name="taskName" type="text" placeholder="New task description" required>
+          <input name="points" type="number" min="0" step="1" placeholder="Points" required>
+          <button type="submit">Add Task</button>
+        </form>
+        <form class="admin-form" id="renameTeamForm">
+          <select name="oldTeamName" id="renameTeamSelect" required></select>
+          <input name="newTeamName" type="text" placeholder="New team name" required>
+          <button type="submit">Rename Team</button>
+        </form>
+      </section>
+      <section class="tasks" id="tasks"></section>
+    </main>
+
+    <script>
+      const ADMIN_LABEL = 'admin';
+      const teamButtons = document.getElementById('teamButtons');
+      const statusEl = document.getElementById('status');
+      const scoresEl = document.getElementById('scores');
+      const adminPanel = document.getElementById('adminPanel');
+      const adminForm = document.getElementById('adminForm');
+      const renameTeamForm = document.getElementById('renameTeamForm');
+      const renameTeamSelect = document.getElementById('renameTeamSelect');
+      const tasksEl = document.getElementById('tasks');
+
+      let selectedTeam = localStorage.getItem('humanHauntTeam') || '';
+      let isBusy = false;
+
+      adminForm.addEventListener('submit', event => {
+        event.preventDefault();
+        addTask(new FormData(adminForm));
+      });
+
+      renameTeamForm.addEventListener('submit', event => {
+        event.preventDefault();
+        renameTeam(new FormData(renameTeamForm));
+      });
+
+      let lastState = null;
+
+      function loadGameState() {
+        setStatus('Loading tasks...');
+        google.script.run
+          .withSuccessHandler(state => {
+            lastState = state;
+            renderState(state);
+            setStatus(`Updated ${new Date(state.updatedAt).toLocaleTimeString()}`);
+          })
+          .withFailureHandler(showError)
+          .getGameState();
+      }
+
+      function claim(rowNumber) {
+        if (!selectedTeam) {
+          setStatus('Choose your team first.');
+          return;
+        }
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Claiming task...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .claimTask(rowNumber, selectedTeam);
+      }
+
+      function resetTask(rowNumber) {
+        if (!isAdmin()) {
+          setStatus('Select admin first.');
+          return;
+        }
+
+        const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
+        const taskName = task ? task.taskName : 'this task';
+
+        if (!confirm(`Reset "${taskName}"?`)) {
+          return;
+        }
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Resetting task...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .resetTask(rowNumber);
+      }
+
+      function editTask(rowNumber) {
+        if (!isAdmin()) {
+          setStatus('Select admin first.');
+          return;
+        }
+
+        const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
+        if (!task) {
+          setStatus('Task not found.');
+          return;
+        }
+
+        const taskName = prompt('Task description', task.taskName);
+        if (taskName === null) {
+          return;
+        }
+
+        const points = prompt('Point value', task.points);
+        if (points === null) {
+          return;
+        }
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Updating task...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .updateTask(rowNumber, taskName, points);
+      }
+
+      function deleteTask(rowNumber) {
+        if (!isAdmin()) {
+          setStatus('Select admin first.');
+          return;
+        }
+
+        const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
+        const taskName = task ? task.taskName : 'this task';
+
+        if (!confirm(`Delete "${taskName}"? This cannot be undone.`)) {
+          return;
+        }
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Deleting task...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .deleteTask(rowNumber);
+      }
+
+      function addTask(formData) {
+        if (!isAdmin()) {
+          setStatus('Select admin first.');
+          return;
+        }
+
+        const taskName = formData.get('taskName');
+        const points = formData.get('points');
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Adding task...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            adminForm.reset();
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .addTask(taskName, points);
+      }
+
+      function renameTeam(formData) {
+        if (!isAdmin()) {
+          setStatus('Select admin first.');
+          return;
+        }
+
+        const oldTeamName = formData.get('oldTeamName');
+        const newTeamName = formData.get('newTeamName');
+
+        isBusy = true;
+        renderLastState();
+        setStatus('Renaming team...');
+
+        google.script.run
+          .withSuccessHandler(result => {
+            isBusy = false;
+            renameTeamForm.reset();
+            selectedTeam = ADMIN_LABEL;
+            localStorage.setItem('humanHauntTeam', selectedTeam);
+            lastState = result.state;
+            renderState(result.state);
+            setStatus(result.message);
+          })
+          .withFailureHandler(error => {
+            isBusy = false;
+            renderLastState();
+            showError(error);
+          })
+          .renameTeam(oldTeamName, newTeamName);
+      }
+
+      function renderLastState() {
+        if (lastState) {
+          renderState(lastState);
+        }
+      }
+
+      function renderState(state) {
+        validateSelectedTeam(state.teams);
+        renderTeamButtons(state.teams);
+        renderRenameTeamOptions(state.teams);
+        renderScores(state.scores);
+        renderAdminPanel();
+        renderTasks(state.tasks);
+      }
+
+      function validateSelectedTeam(teams) {
+        if (!teams.includes(selectedTeam) && selectedTeam !== ADMIN_LABEL) {
+          selectedTeam = '';
+          localStorage.removeItem('humanHauntTeam');
+        }
+      }
+
+      function renderTeamButtons(teams) {
+        const options = [...teams, ADMIN_LABEL];
+
+        teamButtons.innerHTML = options
+          .map(team => {
+            const isSelected = team === selectedTeam;
+            const isAdminTeam = team === ADMIN_LABEL;
+            const jsTeam = escapeHtml(escapeJsString(team));
+
+            return `
+              <button
+                class="team-button ${isSelected ? 'active' : ''} ${isAdminTeam ? 'admin-team' : ''}"
+                type="button"
+                onclick="selectTeam('${jsTeam}')"
+              >
+                ${escapeHtml(team)}
+              </button>
+            `;
+          })
+          .join('');
+      }
+
+      function renderRenameTeamOptions(teams) {
+        renameTeamSelect.innerHTML = [
+          '<option value="">Team to rename</option>',
+          ...teams.map(team => `<option value="${escapeHtml(team)}">${escapeHtml(team)}</option>`),
+        ].join('');
+      }
+
+      function selectTeam(team) {
+        selectedTeam = team;
+
+        if (selectedTeam) {
+          localStorage.setItem('humanHauntTeam', selectedTeam);
+        } else {
+          localStorage.removeItem('humanHauntTeam');
+        }
+
+        renderLastState();
+      }
+
+      function renderScores(scores) {
+        scoresEl.innerHTML = scores
+          .map(score => `
+            <article class="score-card">
+              <div class="score-team">${escapeHtml(score.team)}</div>
+              <div class="score-value">${score.score}</div>
+            </article>
+          `)
+          .join('');
+      }
+
+      function renderAdminPanel() {
+        adminPanel.classList.toggle('visible', isAdmin());
+      }
+
+      function renderTasks(tasks) {
+        tasksEl.innerHTML = tasks
+          .map(task => {
+            const isClaimed = Boolean(task.claimedBy);
+            const claimText = isClaimed ? `Claimed by ${escapeHtml(task.claimedBy)}` : 'Open';
+            const buttonText = isClaimed ? 'Locked' : 'Claim';
+            const escapedTaskName = escapeHtml(task.taskName);
+
+            return `
+              <article class="task-card">
+                <div>
+                  <h2 class="task-title">${escapedTaskName}</h2>
+                  <p class="task-meta">
+                    ${task.points} points &middot; <span class="${isClaimed ? 'claimed' : ''}">${claimText}</span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  ${isClaimed || isBusy || !selectedTeam || isAdmin() ? 'disabled' : ''}
+                  onclick="claim(${task.rowNumber})"
+                >
+                  ${buttonText}
+                </button>
+                ${isAdmin() ? `
+                  <button
+                    class="secondary"
+                    type="button"
+                    ${isBusy ? 'disabled' : ''}
+                    onclick="editTask(${task.rowNumber})"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="secondary"
+                    type="button"
+                    ${isBusy ? 'disabled' : ''}
+                    onclick="resetTask(${task.rowNumber})"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    class="danger"
+                    type="button"
+                    ${isBusy ? 'disabled' : ''}
+                    onclick="deleteTask(${task.rowNumber})"
+                  >
+                    Delete
+                  </button>
+                ` : ''}
+              </article>
+            `;
+          })
+          .join('');
+      }
+
+      function isAdmin() {
+        return selectedTeam === ADMIN_LABEL;
+      }
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function showError(error) {
+        setStatus(error && error.message ? error.message : String(error));
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function escapeJsString(value) {
+        return String(value)
+          .replace(/\\/g, '\\\\')
+          .replace(/'/g, "\\'")
+          .replace(/\r?\n/g, ' ');
+      }
+
+      loadGameState();
+    </script>
+  </body>
+</html>
