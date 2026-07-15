@@ -10,7 +10,105 @@ Current sheet layout:
 - Header row: row `2`
 - First task row: row `3`
 
-## Set Up
+## Dev Environment Set Up
+
+You can edit this Apps Script project either through the Google Apps Script
+editor or locally with `clasp`. Local development is recommended once you are
+making repeated changes.
+
+### Prerequisites
+
+Install these tools first:
+
+- [Node.js LTS](https://nodejs.org/)
+- npm, which is installed with Node.js
+- A Google account with edit access to the Human Haunt spreadsheet
+
+Verify Node and npm from PowerShell:
+
+```powershell
+node -v
+npm -v
+```
+
+If PowerShell blocks `npm` or `npx` scripts, allow local scripts for your user:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+### Install `clasp`
+
+`clasp` is Google's command-line tool for Apps Script projects.
+
+```powershell
+npm install -g @google/clasp
+clasp --version
+```
+
+Enable the Apps Script API for your Google account:
+
+1. Open [Google Apps Script settings](https://script.google.com/home/usersettings).
+2. Turn on `Google Apps Script API`.
+
+Then log in:
+
+```powershell
+clasp login
+```
+
+### Connect This Folder To An Apps Script Project
+
+If the Apps Script project already exists:
+
+1. Open the script in the Apps Script editor.
+2. Go to `Project Settings`.
+3. Copy the `Script ID`.
+4. From this repo folder, create `apps-script/.clasp.json`:
+
+```json
+{
+  "scriptId": "PASTE_SCRIPT_ID_HERE",
+  "rootDir": "."
+}
+```
+
+Then push local files:
+
+```powershell
+cd apps-script
+clasp push
+```
+
+If you need to create a new Apps Script project instead:
+
+```powershell
+cd apps-script
+clasp create --type webapp --title "Human Haunt"
+clasp push
+```
+
+### Local Edit Workflow
+
+1. Edit `Code.gs` and `Index.html` locally.
+2. Push changes:
+
+   ```powershell
+   cd apps-script
+   clasp push
+   ```
+
+3. Open the Apps Script editor if you need to run or authorize functions:
+
+   ```powershell
+   clasp open
+   ```
+
+4. Deploy a new web app version when you are ready to share changes.
+
+### Manual Set Up
+
+If you do not want to use `clasp`, copy the files manually:
 
 1. Open the Google Sheet.
 2. Go to `Extensions > Apps Script`.
