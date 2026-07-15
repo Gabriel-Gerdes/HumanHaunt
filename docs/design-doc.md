@@ -91,6 +91,21 @@ High-level components:
 
 The app should avoid treating mutable task rows as the source of truth. Mutable views should be projections produced from the event log plus the initial game package.
 
+```mermaid
+flowchart TD
+  player[Player] --> mobile_ui[Mobile UI]
+  mobile_ui --> domain[Domain Projection Layer]
+  domain --> sqlite[(SQLite Local Store)]
+  mobile_ui --> mesh[Mesh Transport Layer]
+  mesh --> sqlite
+  mesh <--> peer_devices[Nearby Player Devices]
+  central[Central Command] --> admin_packages[Signed Admin Packages]
+  admin_packages --> mesh
+  sqlite --> domain
+  domain --> views[Tasks, Scores, Claim Status]
+  views --> mobile_ui
+```
+
 ## Data Model
 
 The existing mobile schema already includes `games`, `teams`, `tasks`, `devices`, `claim_events`, and `sync_state`. The production model should extend this into a single event-chain model so claim events and admin packages can sync through the same protocol.
@@ -226,6 +241,22 @@ Initial rule:
 - Ties are resolved by lexicographic event ID.
 - Admin reset events can invalidate a claim, causing the projection to choose the next earliest valid claim or reopen the task.
 
+```mermaid
+flowchart LR
+  seed[Initial Game Package] --> event_log[(Append-Only Event Chain)]
+  local_claim[Local Claim Event] --> validate_claim{Valid Claim?}
+  peer_event[Imported Peer Event] --> validate_claim
+  admin_event[Signed Admin Event] --> verify_admin{Signature Valid?}
+  verify_admin -->|yes| event_log
+  verify_admin -->|no| reject_admin[Reject and Do Not Relay]
+  validate_claim -->|yes| event_log
+  validate_claim -->|no| reject_claim[Reject or Keep for Diagnostics]
+  event_log --> projection[Deterministic Projection]
+  projection --> winners[Task Winners]
+  projection --> scores[Team Scores]
+  projection --> active_tasks[Active Task List]
+```
+
 ## Mesh Sync Protocol
 
 The current skeleton has a TCP peer sync that sends all claim events to connected peers. The production protocol should evolve toward UID-based delta exchange.
@@ -241,6 +272,24 @@ When two nodes connect:
 5. Node A requests missing UIDs from B.
 6. Both nodes import valid events and update their projections.
 7. Newly imported events are relayed to connected peers.
+
+```mermaid
+sequenceDiagram
+  participant A as Node A
+  participant B as Node B
+  A->>B: hello(gameId, protocolVersion, knownEventUids)
+  B->>B: Compare Node A UIDs with local chain
+  B->>A: request_events(missingFromB)
+  A->>B: events(requestedByB)
+  B->>A: hello(gameId, protocolVersion, knownEventUids)
+  A->>A: Compare Node B UIDs with local chain
+  A->>B: request_events(missingFromA)
+  B->>A: events(requestedByA)
+  A->>A: Validate, insert, project
+  B->>B: Validate, insert, project
+  A-->>B: event_announcement(newlyImportedUids)
+  B-->>A: event_announcement(newlyImportedUids)
+```
 
 ### Message Types
 
@@ -309,6 +358,22 @@ Future hardening:
 3. Central Command creates admin events as needed.
 4. Admin events propagate through the mesh.
 5. Devices verify admin signatures and update projections.
+
+```mermaid
+flowchart TD
+  setup[Host Creates Game Package] --> distribute[Distribute Package to Devices]
+  distribute --> initialize[Devices Initialize SQLite]
+  initialize --> play[Players Claim Tasks Offline]
+  play --> claim_events[Claim Events Enter Mesh]
+  command[Central Command Creates Admin Package] --> sign[Sign Admin Event]
+  sign --> inject[Inject Into Mesh]
+  inject --> verify[Devices Verify Signature]
+  claim_events --> sync[Devices Exchange Missing Event UIDs]
+  verify --> sync
+  sync --> project[Recompute Local Projection]
+  project --> final_state[Converged Tasks and Scores]
+  final_state --> export[Central Command Exports Final Chain]
+```
 
 ### After the Game
 
