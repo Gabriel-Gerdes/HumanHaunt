@@ -84,25 +84,25 @@ HumanHaunt should be local-first and event-sourced.
 High-level components:
 
 - UI layer: React Native screens and components for team selection, tasks, scores, sync status, and admin status.
-- Domain layer: pure logic for deriving winners, scores, active task lists, and conflict resolution from events.
+- Game state builder: pure logic for deriving winners, scores, active task lists, and conflict resolution from events.
 - Persistence layer: SQLite tables for games, teams, tasks, devices, events, sync state, and peer metadata.
 - Mesh transport layer: peer discovery, connection management, relaying, handshakes, and missing-event requests.
 - Admin package layer: signed admin events and validation rules.
 
-The app should avoid treating mutable task rows as the source of truth. Mutable views should be projections produced from the event log plus the initial game package.
+The app should avoid treating mutable task rows as the source of truth. Mutable views should be built from the event log plus the initial game package.
 
 ```mermaid
 flowchart TD
   player[Player] --> mobile_ui[Mobile UI]
-  mobile_ui --> domain[Domain Projection Layer]
-  domain --> sqlite[(SQLite Local Store)]
+  mobile_ui --> game_state_builder[Game State Builder]
+  game_state_builder --> sqlite[(SQLite Local Store)]
   mobile_ui --> mesh[Mesh Transport Layer]
   mesh --> sqlite
   mesh <--> peer_devices[Nearby Player Devices]
   central[Central Command] --> admin_packages[Signed Admin Packages]
   admin_packages --> mesh
-  sqlite --> domain
-  domain --> views[Tasks, Scores, Claim Status]
+  sqlite --> game_state_builder
+  game_state_builder --> views[Tasks, Scores, Claim Status]
   views --> mobile_ui
 ```
 
@@ -220,18 +220,18 @@ Validation rules:
 
 - Admin events must be signed by a trusted Central Command key.
 - Devices should ignore unsigned or invalidly signed admin events.
-- Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid in the derived projection.
+- Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
 - Admin event ordering should be deterministic. Prefer `created_at`, then event ID, with a future option for admin sequence numbers.
 
 ## Claim Event Chain
 
-The claim event chain is the set of event UIDs and event bodies known to a node. It is append-only at storage time and deterministic at projection time.
+The claim event chain is the set of event UIDs and event bodies known to a node. It is append-only at storage time and deterministic when building the current game state.
 
 Every node stores:
 
 - A UID list for all known events.
 - Full event bodies for locally created and imported events.
-- A local projection of tasks, winners, and scores.
+- A locally built game state containing tasks, winners, and scores.
 
 The chain may contain conflicting claims. Conflicts are expected because devices can be offline and create claims before hearing about each other. Conflict resolution happens when deriving game state, not when inserting events.
 
@@ -239,7 +239,7 @@ Initial rule:
 
 - For each task, the winning claim is the valid claim with the earliest `claimedAt`.
 - Ties are resolved by lexicographic event ID.
-- Admin reset events can invalidate a claim, causing the projection to choose the next earliest valid claim or reopen the task.
+- Admin reset events can invalidate a claim, causing the game state builder to choose the next earliest valid claim or reopen the task.
 
 ```mermaid
 flowchart LR
@@ -251,10 +251,51 @@ flowchart LR
   verify_admin -->|no| reject_admin[Reject and Do Not Relay]
   validate_claim -->|yes| event_log
   validate_claim -->|no| reject_claim[Reject or Keep for Diagnostics]
-  event_log --> projection[Deterministic Projection]
-  projection --> winners[Task Winners]
-  projection --> scores[Team Scores]
-  projection --> active_tasks[Active Task List]
+  event_log --> game_state_builder[Game State Builder]
+  game_state_builder --> winners[Task Winners]
+  game_state_builder --> scores[Team Scores]
+  game_state_builder --> active_tasks[Active Task List]
+```
+
+### Reconciliation Example
+
+In this example, two devices are offline and both claim the same task. When they later connect, neither event is deleted. Both devices store both claim events, then the Game State Builder applies the same deterministic rules and chooses the earliest valid claim as the winner.
+
+```mermaid
+sequenceDiagram
+  participant A as Phone A
+  participant B as Phone B
+  participant StoreA as SQLite A
+  participant StoreB as SQLite B
+  participant BuilderA as Game State Builder A
+  participant BuilderB as Game State Builder B
+
+  Note over A,B: Devices are offline and cannot see each other
+  A->>StoreA: Insert claim-100<br/>task: Photo Booth<br/>team: Team 1<br/>claimedAt: 10:03
+  B->>StoreB: Insert claim-200<br/>task: Photo Booth<br/>team: Team 2<br/>claimedAt: 10:05
+  BuilderA->>StoreA: Build current game state
+  StoreA-->>BuilderA: claim-100 only
+  BuilderA-->>A: Photo Booth winner: Team 1
+  BuilderB->>StoreB: Build current game state
+  StoreB-->>BuilderB: claim-200 only
+  BuilderB-->>B: Photo Booth winner: Team 2
+
+  Note over A,B: Devices reconnect and exchange event UID lists
+  A->>B: hello([claim-100])
+  B->>A: request_events([claim-100])
+  A->>B: events([claim-100])
+  B->>A: hello([claim-200])
+  A->>B: request_events([claim-200])
+  B->>A: events([claim-200])
+
+  A->>StoreA: Insert missing claim-200
+  B->>StoreB: Insert missing claim-100
+  BuilderA->>StoreA: Rebuild current game state
+  StoreA-->>BuilderA: claim-100 and claim-200
+  BuilderB->>StoreB: Rebuild current game state
+  StoreB-->>BuilderB: claim-100 and claim-200
+  BuilderA-->>A: Photo Booth winner: Team 1<br/>claim-100 was earlier
+  BuilderB-->>B: Photo Booth winner: Team 1<br/>claim-100 was earlier
 ```
 
 ## Mesh Sync Protocol
@@ -270,7 +311,7 @@ When two nodes connect:
 3. Node B sends `request_events` for UIDs it is missing.
 4. Node B sends its own UID list or a compact summary.
 5. Node A requests missing UIDs from B.
-6. Both nodes import valid events and update their projections.
+6. Both nodes import valid events and rebuild their current game state.
 7. Newly imported events are relayed to connected peers.
 
 ```mermaid
@@ -285,8 +326,8 @@ sequenceDiagram
   A->>A: Compare Node B UIDs with local chain
   A->>B: request_events(missingFromA)
   B->>A: events(requestedByA)
-  A->>A: Validate, insert, project
-  B->>B: Validate, insert, project
+  A->>A: Validate, insert, rebuild current game state
+  B->>B: Validate, insert, rebuild current game state
   A-->>B: event_announcement(newlyImportedUids)
   B-->>A: event_announcement(newlyImportedUids)
 ```
@@ -357,7 +398,7 @@ Future hardening:
 2. Devices exchange claim events through the mesh.
 3. Central Command creates admin events as needed.
 4. Admin events propagate through the mesh.
-5. Devices verify admin signatures and update projections.
+5. Devices verify admin signatures and rebuild their current game state.
 
 ```mermaid
 flowchart TD
@@ -388,14 +429,14 @@ flowchart TD
 - Add points to the mobile task model and SQLite schema.
 - Add score totals to the mobile UI.
 - Add explicit team selection instead of claim buttons for every team.
-- Preserve first-claim-wins behavior in the domain projection.
+- Preserve first-claim-wins behavior in the game state builder.
 - Keep the current simple peer sync as a development aid.
 
 ### Phase 2: Event Chain Unification
 
 - Replace `claim_events`-only sync with a generic `events` table.
 - Represent claim events and admin packages with a common envelope.
-- Make projections derive tasks, claims, resets, team names, and scores from events.
+- Make the game state builder derive tasks, claims, resets, team names, and scores from events.
 - Add deterministic validation and conflict resolution tests.
 
 ### Phase 3: UID-Based Mesh Sync
@@ -411,7 +452,7 @@ flowchart TD
 - Define admin event schemas.
 - Add signing in Central Command.
 - Add signature verification in the mobile app.
-- Implement task add/update/delete, team rename, and claim reset projections.
+- Implement task add/update/delete, team rename, and claim reset behavior in the game state builder.
 - Add host-facing export/import tooling.
 
 ### Phase 5: Production Hardening
@@ -426,7 +467,7 @@ flowchart TD
 ## Testing Strategy
 
 - Domain unit tests for claim ordering, score totals, task resets, task admin events, and invalid event handling.
-- SQLite tests for migrations, idempotent imports, and projection queries.
+- SQLite tests for migrations, idempotent imports, and current-state queries.
 - Protocol tests for handshake diffing, missing UID requests, duplicate imports, and relay behavior.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
 - Admin package tests for valid signatures, invalid signatures, replay attempts, and reset behavior.
