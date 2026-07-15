@@ -25,9 +25,9 @@ The repository currently contains:
 - Provide task search.
 - Preserve lockout behavior: only one team should win a task in the derived game state.
 - Work with no cell signal and no central internet service.
-- Propagate claim events through nearby devices using an offline mesh.
-- Store the full local claim event chain in SQLite on every node.
-- Synchronize missing claim events during node handshakes.
+- Propagate claim and admin events through nearby devices using an offline mesh.
+- Store the full local event chain in SQLite on every node.
+- Synchronize missing claim and admin events during node handshakes.
 - Support a dedicated Central Command app that creates signed admin packages.
 - Propagate admin packages through the same mesh/event-chain mechanism.
 - Allow admins to add tasks, reset false claims, rename teams, and perform other game operations.
@@ -349,9 +349,9 @@ The mobile app should provide task search so players can quickly find tasks by t
 
 Search should work entirely offline against the local SQLite state and should respect the same visibility rules as the main task list.
 
-## Claim Event Chain
+## Event Chain
 
-The claim event chain is the set of event UIDs and event bodies known to a node. It is append-only at storage time and deterministic when building the current game state.
+The event chain is the set of event UIDs and event bodies known to a node. An event UID can identify either a claim event or an admin event. The chain is append-only at storage time and deterministic when building the current game state.
 
 Every node stores:
 
@@ -359,7 +359,7 @@ Every node stores:
 - Full event bodies for locally created and imported events.
 - A locally built game state containing tasks, winners, and scores.
 
-The chain may contain conflicting claims. Conflicts are expected because devices can be offline and create claims before hearing about each other. Conflict resolution happens when deriving game state, not when inserting events.
+The chain may contain conflicting claims and later admin events that change how claims are interpreted. Conflicts are expected because devices can be offline and create claims before hearing about each other. Conflict resolution happens when deriving game state, not when inserting events.
 
 Initial rule:
 
@@ -426,14 +426,14 @@ sequenceDiagram
 
 ## Mesh Sync Protocol
 
-The current skeleton has a TCP peer sync that sends all claim events to connected peers. The production protocol should evolve toward UID-based delta exchange.
+The current skeleton has a TCP peer sync that sends all claim events to connected peers. The production protocol should evolve toward UID-based delta exchange for both claim events and admin events.
 
 ### Handshake
 
 When two nodes connect:
 
 1. Node A sends `hello` with device metadata, game ID, protocol version, and known event UIDs.
-2. Node B compares A's UID list to its local UID list.
+2. Node B compares A's UID list to its local UID list. Each UID may refer to a claim event or an admin event.
 3. Node B sends `request_events` for UIDs it is missing.
 4. Node B sends its own UID list or a compact summary.
 5. Node A requests missing UIDs from B.
@@ -462,7 +462,7 @@ sequenceDiagram
 
 Recommended starting message set:
 
-- `hello`: device metadata, game ID, protocol version, event UID list or digest.
+- `hello`: device metadata, game ID, protocol version, event UID list or digest. Event UIDs may represent claim events or admin events.
 - `request_events`: event UID list requested from a peer.
 - `events`: full event bodies.
 - `event_announcement`: newly available event UIDs.
@@ -521,7 +521,7 @@ Future hardening:
 ### During the Game
 
 1. Players claim tasks locally.
-2. Devices exchange claim events through the mesh.
+2. Devices exchange claim and admin events through the mesh.
 3. Central Command creates admin events as needed and increments the game version.
 4. Admin events propagate through the mesh.
 5. Devices verify admin signatures, record the new game version, and rebuild their current game state.
@@ -536,7 +536,7 @@ flowchart TD
   increment --> sign[Sign Admin Event]
   sign --> inject[Inject Into Mesh]
   inject --> verify[Devices Verify Signature]
-  claim_events --> sync[Devices Exchange Missing Event UIDs]
+  claim_events --> sync[Devices Exchange Missing Claim/Admin Event UIDs]
   verify --> sync
   sync --> project[Rebuild Current Game State]
   project --> final_state[Converged Tasks and Scores]
