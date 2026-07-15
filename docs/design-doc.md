@@ -156,6 +156,7 @@ This should become the canonical append-only chain.
 
 - `id`: globally unique event UID.
 - `game_id`
+- `game_version`: version of the game rules/data the event was created against.
 - `type`: `claim_created`, `admin_task_added`, `admin_task_updated`, `admin_task_deleted`, `admin_claim_reset`, `admin_team_renamed`, etc.
 - `created_at`: sender timestamp.
 - `received_at`: local ingest timestamp.
@@ -196,6 +197,7 @@ Payload:
 {
   "taskId": "task-biff-lime",
   "teamId": "team-1",
+  "gameVersion": "1.2.3",
   "claimedAt": 1784131200000
 }
 ```
@@ -204,6 +206,7 @@ Validation rules:
 
 - `taskId` must reference a known active task at the time the event is applied.
 - `teamId` must reference a known active team.
+- `gameVersion` must match the current active game version on the device when the claim is created.
 - Duplicate event IDs are ignored.
 - If multiple teams claim the same task, the derived winner is the earliest valid claim by `claimedAt`, with event ID as the deterministic tie-breaker.
 
@@ -211,19 +214,61 @@ Validation rules:
 
 An admin package is an event created by Central Command. It uses the same mesh propagation mechanics as claim events but requires admin signature verification.
 
+Each admin package includes the game version it produces. When Central Command pushes an admin change, it increments the game version and signs the resulting admin event.
+
 Payload examples:
 
-- Add task: `{ "taskId": "...", "title": "...", "points": 10, "sortOrder": 12 }`
-- Reset claim: `{ "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
-- Rename team: `{ "teamId": "...", "name": "Team Ghost" }`
-- Delete task: `{ "taskId": "..." }`
+- Add task: `{ "gameVersion": "1.3.0", "taskId": "...", "title": "...", "points": 10, "sortOrder": 12 }`
+- Reset claim: `{ "gameVersion": "1.2.4", "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
+- Rename team: `{ "gameVersion": "1.3.0", "teamId": "...", "name": "Team Ghost" }`
+- Delete task: `{ "gameVersion": "1.3.0", "taskId": "..." }`
 
 Validation rules:
 
 - Admin events must be signed by a trusted Central Command key.
+- Admin events must include the resulting `gameVersion`.
 - Devices should ignore unsigned or invalidly signed admin events.
 - Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
 - Admin event ordering should be deterministic. Prefer `created_at`, then event ID, with a future option for admin sequence numbers.
+
+## Game Versioning
+
+Game versions should follow `major.minor.patch` semantics. Central Command owns version advancement, and every admin package should carry the resulting game version so player devices can understand which version of the game state produced each event.
+
+Claim events should also include the current `gameVersion`. This makes later reconciliation and host review easier because each claim can be tied to the game rules and task list visible to the player when the claim was made.
+
+### Major Admin Actions
+
+Major version increments are full redeployments of the game and game code. A major version change should not be propagated into an actively running match as a normal mesh update.
+
+Expected behavior:
+
+- Example increment: `1.4.2` to `2.0.0`.
+- Devices should treat the new major version as a different game deployment.
+- Any actively running game/match should restart instead of attempting to merge the change into the existing event chain.
+- Existing claims and admin events should remain attached to the previous major version for audit/export.
+
+### Minor Admin Actions
+
+Minor version increments are admin changes with dramatic impact on the player base or game structure.
+
+Expected behavior:
+
+- Example increment: `1.4.2` to `1.5.0`.
+- Adding or removing a team is a minor version change.
+- Large task-list changes, scoring model changes, or other changes that alter player strategy should also be minor version changes.
+- Devices may apply minor changes during a running match, but the UI should make the version change visible because players may see materially different game state afterward.
+
+### Patch Admin Actions
+
+Patch version increments are small operational corrections.
+
+Expected behavior:
+
+- Example increment: `1.4.2` to `1.4.3`.
+- Resetting a false claim is a patch version change.
+- Correcting a typo, adjusting a task description, or making a small task correction can be a patch version change if it does not materially alter player strategy.
+- Patch changes should propagate through the mesh and rebuild current game state without requiring a match restart.
 
 ## Claim Event Chain
 
@@ -398,9 +443,9 @@ Future hardening:
 
 1. Players claim tasks locally.
 2. Devices exchange claim events through the mesh.
-3. Central Command creates admin events as needed.
+3. Central Command creates admin events as needed and increments the game version.
 4. Admin events propagate through the mesh.
-5. Devices verify admin signatures and rebuild their current game state.
+5. Devices verify admin signatures, record the new game version, and rebuild their current game state.
 
 ```mermaid
 flowchart TD
@@ -408,12 +453,13 @@ flowchart TD
   distribute --> initialize[Devices Initialize SQLite]
   initialize --> play[Players Claim Tasks Offline]
   play --> claim_events[Claim Events Enter Mesh]
-  command[Central Command Creates Admin Package] --> sign[Sign Admin Event]
+  command[Central Command Creates Admin Package] --> increment[Increment Game Version]
+  increment --> sign[Sign Admin Event]
   sign --> inject[Inject Into Mesh]
   inject --> verify[Devices Verify Signature]
   claim_events --> sync[Devices Exchange Missing Event UIDs]
   verify --> sync
-  sync --> project[Recompute Local Projection]
+  sync --> project[Rebuild Current Game State]
   project --> final_state[Converged Tasks and Scores]
   final_state --> export[Central Command Exports Final Chain]
 ```
