@@ -22,13 +22,13 @@ The repository currently contains:
 - Let a team claim an open task and receive the task's points.
 - Optionally hide exact task point values while still showing current team rankings.
 - Group tasks into categories for easier navigation.
-- Provide task search.
+- Provide task search by task description.
 - Preserve lockout behavior: only one team should win a task in the derived game state.
 - Work with no cell signal and no central internet service.
 - Propagate claim and admin events through nearby devices using an offline mesh.
 - Store the full local event chain in SQLite on every node.
 - Synchronize missing claim and admin events during node handshakes.
-- Support a dedicated Central Command app that creates signed admin packages.
+- Support a dedicated Central Command app that creates admin packages.
 - Propagate admin packages through the same mesh/event-chain mechanism.
 - Allow admins to add tasks, reset false claims, rename teams, and perform other game operations.
 
@@ -39,6 +39,7 @@ The repository currently contains:
 - Strong identity proof for ordinary player devices in the first version.
 - A full anti-cheat system in the first version.
 - Preserving the Google Sheet as the production source of truth.
+- Cryptographic signatures for admin or claim events in the first version.
 
 ## Current Spike Behavior
 
@@ -69,7 +70,7 @@ Primary responsibilities:
 - Create local claim events.
 - Store events in SQLite.
 - Sync claim and admin events with nearby peers.
-- Recompute task winners and scores from the local event chain.
+- Rebuild task winners and scores from the local event chain into a local state document.
 
 ### Central Command App
 
@@ -77,13 +78,14 @@ Central Command is used by game hosts/admins.
 
 Primary responsibilities:
 
-- Create the initial game package.
+- Create the initial game package as a block of creation events.
 - Create admin packages during the event.
-- Sign admin packages so player devices can verify they came from Central Command.
 - Participate in the mesh to inject admin packages and collect game state.
+- Issue hard-write blocks to compact old event UIDs for faster handshakes.
+- Emit game-end and collection-window events.
 - Optionally export the final event chain after the event.
 
-Central Command can be implemented as a separate app surface after the mobile event model is stable. It may eventually be a React Native admin mode, desktop app, or local web app, but it should use the same event schema and verification rules.
+Central Command can be implemented as a separate app surface after the mobile event model is stable. It may eventually be a React Native admin mode, desktop app, or local web app, but it should use the same event schema and validation rules.
 
 ## Architecture
 
@@ -92,39 +94,38 @@ HumanHaunt should be local-first and event-sourced.
 High-level components:
 
 - UI layer: React Native screens and components for team selection, tasks, scores, sync status, and admin status.
-- Game state builder: pure logic for deriving winners, scores, active task lists, and conflict resolution from events.
-- Persistence layer: SQLite tables for games, teams, tasks, devices, events, sync state, and peer metadata.
+- Game state builder: pure logic that walks the event log in order and produces a local JSON state document for the UI.
+- Persistence layer: SQLite tables for games, teams, tasks, users, events, sync state, hard-write blocks, and peer metadata.
 - Mesh transport layer: peer discovery, connection management, relaying, handshakes, and missing-event requests.
-- Admin package layer: signed admin events and validation rules.
+- Admin package layer: Central Command admin events and validation rules.
 
-The app should avoid treating mutable task rows as the source of truth. Mutable views should be built from the event log plus the initial game package.
+The app should avoid treating mutable task rows as the source of truth. Mutable views should be built from the event log. Seed tables such as `games`, `teams`, `tasks`, `phases`, and `categories` are materialized projections of that log, not an independent source of truth.
 
 ```mermaid
 flowchart TD
   player[Player] --> rn_app[React Native Android/iOS App]
   rn_app --> ui[Task List, Search, Rankings, Sync Status]
   rn_app --> claim_creator[Claim Event Creator]
-  claim_creator --> claim_envelope[claim_created Event Envelope]
+  claim_creator --> claim_event[claim_created Event]
 
-  central[Central Command] --> admin_creator[Versioned Admin Event Creator]
-  admin_creator --> admin_envelope[Signed Admin Event Envelope]
+  central[Central Command] --> admin_creator[Admin Event Creator]
+  admin_creator --> admin_event[Admin Event]
 
-  claim_envelope --> validator[Event Validation]
-  admin_envelope --> validator
-  mesh[Mesh Transport] <--> peers[Nearby Player Devices]
+  claim_event --> validator[Event Validation]
+  admin_event --> validator
+  peers[Nearby Player Devices] <--> mesh[Mesh Transport]
   mesh --> validator
   validator --> events[(SQLite events)]
   validator --> mesh
 
   events --> builder[Game State Builder]
-  seed[(SQLite games, teams, tasks, phases, categories)] --> builder
-  builder --> current_state[Current Tasks, Winners, Scores, Rankings]
-  current_state --> ui
+  builder --> state_doc[Local JSON Game State]
+  state_doc --> ui
 ```
 
 ## Data Model
 
-The existing mobile schema already includes `games`, `teams`, `tasks`, `devices`, `claim_events`, and `sync_state`. The production model should extend this into a single event-chain model so claim events and admin packages can sync through the same protocol.
+The existing mobile schema already includes `games`, `teams`, `tasks`, `devices`, `claim_events`, and `sync_state`. The production model should extend this into a single event-chain model so claim events and admin packages can sync through the same protocol. Originating nodes should be identified by user ID rather than device ID.
 
 Recommended core tables:
 
@@ -134,6 +135,7 @@ Recommended core tables:
 - `name`
 - `created_at`
 - `active`
+- `current_game_version`
 
 ### `teams`
 
@@ -159,7 +161,7 @@ Recommended core tables:
 - `created_by_event_id`
 - `updated_by_event_id`
 
-The current mobile `Task` type does not include points yet. Points should be added before score totals are treated as complete. The production model should distinguish base points from current points so unclaimed tasks can become more valuable in later phases.
+The production model should distinguish base points from current points so unclaimed tasks can become more valuable in later phases.
 
 ### `phases`
 
@@ -181,7 +183,7 @@ The current mobile `Task` type does not include points yet. Points should be add
 - `color`
 - `active`
 
-### `devices`
+### `users`
 
 - `id`
 - `name`
@@ -195,15 +197,23 @@ This should become the canonical append-only chain.
 - `id`: globally unique event UID.
 - `game_id`
 - `game_version`: version of the game rules/data the event was created against.
-- `type`: `claim_created`, `admin_task_added`, `admin_task_updated`, `admin_task_deleted`, `admin_claim_reset`, `admin_team_renamed`, etc.
+- `type`: `claim_created`, `admin_task_added`, `admin_task_updated`, `admin_task_deleted`, `admin_claim_reset`, `admin_team_renamed`, `admin_game_ended`, `admin_hard_write`, etc.
 - `created_at`: sender timestamp.
 - `received_at`: local ingest timestamp.
-- `device_id`: originating node.
+- `user_id`: originating user/node.
 - `payload_json`: typed event-specific payload.
-- `signature`: stable envelope field; nullable for player claims and required for admin events.
-- `hash`: canonical hash of the event body.
-- `previous_hash`: optional link for events created by the same origin.
+- `hash`: optional canonical hash of the event body for quick validation. Not required for v1 correctness, but useful when present.
 - `source`: `local`, `peer`, `seed`, or `admin`.
+
+### `hard_write_blocks`
+
+Compact references issued by Central Command so handshakes can exchange one block ID instead of many old event UIDs.
+
+- `id`: block UID announced during handshakes.
+- `game_id`
+- `created_at`
+- `event_ids_json`: the event UIDs covered by the block.
+- `source_event_id`: the admin hard-write event that created the block.
 
 ### `event_receipts`
 
@@ -222,9 +232,11 @@ Optional but useful later for diagnostics.
 - `last_event_count`
 - `last_handshake_at`
 
+`last_handshake_at` should be surfaced in the player UI as the last time the device successfully connected and completed a handshake with the mesh/network.
+
 ## Event Types
 
-All events should use the same top-level envelope so storage, hashing, signature verification, and mesh routing can treat claim events and admin events uniformly. Event-specific data belongs in `payload`.
+All events should use the same top-level envelope so storage, hashing, and mesh routing can treat claim events and admin events uniformly. Event-specific data belongs in `payload`.
 
 Example envelope:
 
@@ -235,10 +247,8 @@ Example envelope:
   "gameId": "human-haunt-2026",
   "gameVersion": "1.2.3",
   "createdAt": 1784131200000,
-  "deviceId": "phone-a",
-  "signature": null,
+  "userId": "user-a",
   "hash": "...",
-  "previousHash": null,
   "payload": {}
 }
 ```
@@ -256,10 +266,8 @@ Example:
   "gameId": "human-haunt-2026",
   "gameVersion": "1.2.3",
   "createdAt": 1784131200000,
-  "deviceId": "phone-a",
-  "signature": null,
+  "userId": "user-a",
   "hash": "...",
-  "previousHash": null,
   "payload": {
     "taskId": "task-biff-lime",
     "teamId": "team-1",
@@ -276,44 +284,68 @@ Validation rules:
 - Duplicate event IDs are ignored.
 - If multiple teams claim the same task, the derived winner is the earliest valid claim by `claimedAt`, with event ID as the deterministic tie-breaker.
 
+Open decision: what happens when a team is removed after claims exist for that team? Options include keeping historical claims and scores, reassigning, or invalidating those claims. This needs an explicit rule before team-removal admin events ship.
+
 ### Admin Package
 
-An admin package is an event created by Central Command. It uses the same mesh propagation mechanics as claim events but requires admin signature verification.
+An admin package is an event created by Central Command. It uses the same mesh propagation mechanics as claim events.
 
-Each admin package envelope includes the game version it produces. When Central Command pushes an admin change, it increments the game version and signs the resulting admin event.
+Each admin package envelope includes the game version it produces. When Central Command pushes an admin change, it increments the game version and emits the resulting admin event.
 
 Payload examples:
 
-- Add task: `{ "taskId": "...", "title": "...", "points": 10, "sortOrder": 12 }`
+- Add task: `{ "taskId": "...", "title": "...", "basePoints": 10, "sortOrder": 12 }`
 - Reset claim: `{ "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
 - Rename team: `{ "teamId": "...", "name": "Team Ghost" }`
 - Delete task: `{ "taskId": "..." }`
 - Start phase: `{ "phaseId": "...", "boostUnclaimedBy": 5 }`
 - Add category: `{ "categoryId": "...", "name": "Photo Tasks", "sortOrder": 1 }`
+- Game end: `{ "endedAt": 1784135000000, "collectionEndsAt": 1784136800000 }`
+- Hard write: `{ "blockId": "...", "eventIds": ["claim-001", "claim-002"] }`
 
 Validation rules:
 
-- Admin events must be signed by a trusted Central Command key.
 - Admin events must include the resulting `gameVersion`.
-- Devices should ignore unsigned or invalidly signed admin events.
 - Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
-- Admin event ordering should be deterministic. Prefer `created_at`, then event ID, with a future option for admin sequence numbers.
+- Admin event ordering should be deterministic. Prefer `created_at`, then event ID.
+
+### Game Start Package
+
+Game initialization should be a series of individual creation events (teams, categories, phases, tasks, settings), not one giant opaque start payload. Those creation events can be packaged into a hard-write block so devices import the whole start set as one compact unit during setup or first sync.
+
+If a single start snapshot is ever used instead, it must use the same structure as the local JSON game-state document so the Game State Builder can treat it as an equivalent projection.
+
+### Game End and Collection Window
+
+`admin_game_ended` is a specific admin event.
+
+Expected behavior:
+
+1. Central Command emits `admin_game_ended` with an end timestamp and a collection window end time.
+2. During the collection window, devices continue mesh sync so claims that occurred before game end can still propagate.
+3. Claims with `claimedAt` after the game-end timestamp are ignored by the Game State Builder.
+4. When the collection window expires, Central Command issues a hard-write block covering the final accepted event set for that match.
+5. After that hard write, handshakes can exchange the final block ID instead of the full historical UID list.
 
 ## Game Versioning
 
-Game versions should follow `major.minor.patch` semantics. Central Command owns version advancement, and every admin package should carry the resulting game version so player devices can understand which version of the game state produced each event.
+Game version is not the same thing as app version.
+
+- **Game version** (`major.minor.patch`) tracks rules and content changes for a match. Central Command owns game-version advancement.
+- **App version** is the installed mobile client version. When the app's supported major game version increases, that major bump is used to detect outdated clients.
+
+A player whose installed app cannot support the active match's major game version should be told to update to the latest app before they can participate. Devices should not try to merge incompatible major versions into an already running match.
 
 Claim events should also include the current `gameVersion`. This makes later reconciliation and host review easier because each claim can be tied to the game rules and task list visible to the player when the claim was made.
 
 ### Major Admin Actions
 
-Major version increments are full redeployments of the game and game code. A major version change should not be propagated into an actively running match as a normal mesh update.
+Major version increments are full redeployments of the game and/or incompatible app/game code.
 
 Expected behavior:
 
 - Example increment: `1.4.2` to `2.0.0`.
-- Devices should treat the new major version as a different game deployment.
-- Any actively running game/match should restart instead of attempting to merge the change into the existing event chain.
+- Devices that cannot support the new major version should prompt the user to update the app before joining or continuing in the active game.
 - Existing claims and admin events should remain attached to the previous major version for audit/export.
 
 ### Minor Admin Actions
@@ -351,6 +383,7 @@ HumanHaunt should support events that span multiple phases. A phase is a time-bo
 - Tasks from earlier phases remain visible if they were not claimed.
 - Unclaimed tasks from previous phases should carry forward with increased `current_points`.
 - Claimed tasks stay claimed when the phase changes unless an admin package resets the claim.
+- Claimed tasks should be grayed out in the UI and moved into a dedicated `Completed` category.
 - Phase changes should be admin events so they propagate through the mesh and are included in the event chain.
 - Starting a new phase should increment the game version. In most cases this should be a minor version change because the available task pool and team strategy are materially affected.
 
@@ -376,51 +409,82 @@ Examples:
 - Social tasks
 - Bonus tasks
 - Phase-specific tasks
+- Completed
 
-Categories should be part of the game package and mutable through signed admin events when needed.
+`Completed` is a system category for claimed tasks. Other categories should be part of the game package and mutable through admin events when needed.
 
 ### Task Search
 
-The mobile app should provide task search so players can quickly find tasks by title, category, phase, and possibly hint text.
+The mobile app should provide offline task search against local SQLite/state.
 
-Search should work entirely offline against the local SQLite state and should respect the same visibility rules as the main task list.
+Search should match task description/title text only. Category filters and hint text are out of scope for v1 search.
 
 ## Event Chain
 
-The event chain is the set of event UIDs and event bodies known to a node. An event UID can identify either a claim event or an admin event. The chain is append-only at storage time and deterministic when building the current game state.
+The event chain is the set of event UIDs and event bodies known to a node. An event UID can identify a claim event, an admin event, or a hard-write block reference. The chain is append-only at storage time. Current UI state is derived by replaying those events in deterministic order.
 
 Every node stores:
 
-- A UID list for all known events.
+- A UID list for all known events and hard-write blocks.
 - Full event bodies for locally created and imported events.
-- A locally built game state containing tasks, winners, and scores.
+- A locally built JSON game-state document containing tasks, winners, scores, and rankings.
 
-The chain may contain conflicting claims and later admin events that change how claims are interpreted. Conflicts are expected because devices can be offline and create claims before hearing about each other. Conflict resolution happens when deriving game state, not when inserting events.
+### Game State Builder
 
-Initial rule:
+Each device keeps an internal JSON document representing the current game state. The Game State Builder constructs that document by iterating every known event in deterministic order and applying each event to an in-memory state object. The UI reads from the resulting state document, not directly from ad hoc SQL joins over mutable rows.
 
-- For each task, the winning claim is the valid claim with the earliest `claimedAt`.
-- Ties are resolved by lexicographic event ID.
-- Admin reset events can invalidate a claim, causing the game state builder to choose the next earliest valid claim or reopen the task.
+Practical rules:
+
+- Prefer full replay into a new state document when events arrive or when reconciliation is uncertain.
+- Expose a manual "Rebuild state" action so hosts/players can force a clean replay if incremental reconciliation goes wrong.
+- Incremental/vector-style updates are optional later optimizations. If incremental apply is used, every applied action still needs a well-defined way to recompute equivalent state from a full replay; full rebuild remains the source of truth.
+- The initial start package is a block of creation events that the builder applies like any other events.
+
+### Conflict Handling
+
+Offline devices can create claims before they hear about each other. That is expected.
+
+When two devices later sync:
+
+1. Both claim events are kept in the append-only event log.
+2. Neither claim is deleted just because a conflict exists.
+3. The Game State Builder chooses one winner with deterministic rules: earliest valid `claimedAt`, then lexicographic event ID.
+4. Later admin resets can invalidate a specific claim; the builder then chooses the next earliest valid claim or reopens the task.
+
+So the log stores history, and the state document stores the current interpretation of that history.
 
 Example event chain:
 
 ```json
 [
   {
-    "id": "admin-001",
-    "type": "admin_game_created",
+    "id": "admin-team-1",
+    "type": "admin_team_added",
     "gameId": "human-haunt-2026",
     "gameVersion": "1.0.0",
     "createdAt": 1784130000000,
-    "deviceId": "central-command",
-    "signature": "central-command-signature-admin-001",
-    "hash": "hash-admin-001",
-    "previousHash": null,
+    "userId": "central-command",
+    "hash": "hash-admin-team-1",
     "payload": {
-      "teams": ["team-1", "team-2"],
-      "phaseId": "phase-1",
-      "taskIds": ["task-photo-booth", "task-find-ghost"]
+      "teamId": "team-1",
+      "name": "Team 1",
+      "color": "#111111",
+      "sortOrder": 1
+    }
+  },
+  {
+    "id": "admin-task-photo",
+    "type": "admin_task_added",
+    "gameId": "human-haunt-2026",
+    "gameVersion": "1.0.0",
+    "createdAt": 1784130001000,
+    "userId": "central-command",
+    "hash": "hash-admin-task-photo",
+    "payload": {
+      "taskId": "task-photo-booth",
+      "title": "Photo Booth",
+      "basePoints": 10,
+      "sortOrder": 1
     }
   },
   {
@@ -429,10 +493,8 @@ Example event chain:
     "gameId": "human-haunt-2026",
     "gameVersion": "1.0.0",
     "createdAt": 1784131200000,
-    "deviceId": "phone-a",
-    "signature": null,
+    "userId": "user-a",
     "hash": "hash-claim-100",
-    "previousHash": null,
     "payload": {
       "taskId": "task-photo-booth",
       "teamId": "team-1",
@@ -445,10 +507,8 @@ Example event chain:
     "gameId": "human-haunt-2026",
     "gameVersion": "1.0.0",
     "createdAt": 1784131320000,
-    "deviceId": "phone-b",
-    "signature": null,
+    "userId": "user-b",
     "hash": "hash-claim-200",
-    "previousHash": null,
     "payload": {
       "taskId": "task-photo-booth",
       "teamId": "team-2",
@@ -461,10 +521,8 @@ Example event chain:
     "gameId": "human-haunt-2026",
     "gameVersion": "1.0.1",
     "createdAt": 1784132400000,
-    "deviceId": "central-command",
-    "signature": "central-command-signature-admin-002",
+    "userId": "central-command",
     "hash": "hash-admin-002",
-    "previousHash": "hash-admin-001",
     "payload": {
       "taskId": "task-photo-booth",
       "claimEventId": "claim-100",
@@ -478,26 +536,26 @@ In this chain, `claim-100` initially wins because it is earlier than `claim-200`
 
 ```mermaid
 flowchart LR
-  local_claim[Local claim_created Envelope] --> validate[Validate Common Envelope]
-  peer_claim[Peer claim_created Envelope] --> validate
-  peer_admin[Peer Admin Envelope] --> validate
-  central_admin[Central Command Admin Envelope] --> validate
+  local_claim[Local claim_created] --> validate[Validate Common Envelope]
+  peer_claim[Peer claim_created] --> validate
+  peer_admin[Peer Admin Event] --> validate
+  central_admin[Central Command Admin Event] --> validate
 
   validate --> route{Event Type}
   route -->|claim_created| claim_rules[Validate task, team, gameVersion]
-  route -->|admin_*| admin_rules[Verify signature and version change]
+  route -->|admin_*| admin_rules[Validate admin event and version change]
 
   claim_rules -->|valid| event_log[(SQLite Append-Only events)]
   admin_rules -->|valid| event_log
   claim_rules -->|invalid| reject[Reject and Do Not Relay]
   admin_rules -->|invalid| reject
 
-  seed[(Seeded games, teams, tasks, phases, categories)] --> builder[Game State Builder]
-  event_log --> builder
-  builder --> tasks[Visible Tasks by Phase and Category]
-  builder --> winners[Task Winners and Resets]
-  builder --> rankings[Team Scores and Rankings]
-  builder --> search[Offline Search Index/View]
+  event_log --> builder[Game State Builder]
+  builder --> state_doc[Local JSON Game State]
+  state_doc --> tasks[Visible Tasks by Phase and Category]
+  state_doc --> winners[Task Winners and Resets]
+  state_doc --> rankings[Team Scores and Rankings]
+  state_doc --> search[Offline Search View]
 ```
 
 ### Reconciliation Example
@@ -514,8 +572,8 @@ sequenceDiagram
   participant BuilderB as Game State Builder B
 
   Note over A,B: Devices are offline and cannot see each other
-  A->>StoreA: Insert claim-100 envelope<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 1<br/>payload.claimedAt: 10:03
-  B->>StoreB: Insert claim-200 envelope<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 2<br/>payload.claimedAt: 10:05
+  A->>StoreA: Insert claim-100<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 1<br/>payload.claimedAt: 10:03
+  B->>StoreB: Insert claim-200<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 2<br/>payload.claimedAt: 10:05
   BuilderA->>StoreA: Build current game state
   StoreA-->>BuilderA: claim-100 only
   BuilderA-->>A: Photo Booth winner: Team 1
@@ -523,13 +581,13 @@ sequenceDiagram
   StoreB-->>BuilderB: claim-200 only
   BuilderB-->>B: Photo Booth winner: Team 2
 
-  Note over A,B: Devices reconnect and exchange event UID lists
+  Note over A,B: Devices reconnect and exchange UID lists first
   A->>B: hello([claim-100])
-  B->>A: request_events([claim-100])
-  A->>B: events([claim-100 envelope])
   B->>A: hello([claim-200])
+  B->>A: request_events([claim-100])
   A->>B: request_events([claim-200])
-  B->>A: events([claim-200 envelope])
+  A->>B: events([claim-100])
+  B->>A: events([claim-200])
 
   A->>StoreA: Insert missing claim-200
   B->>StoreB: Insert missing claim-100
@@ -543,27 +601,49 @@ sequenceDiagram
   Note over A,B: Later, Central Command reset also syncs as an admin event UID
   A->>B: event_announcement([admin-002])
   B->>A: request_events([admin-002])
-  A->>B: events([admin-002 signed envelope])
-  B->>StoreB: Verify signature and insert admin-002
+  A->>B: events([admin-002])
+  B->>StoreB: Validate and insert admin-002
   BuilderB->>StoreB: Rebuild current game state
   BuilderB-->>B: Photo Booth winner: Team 2<br/>claim-100 was reset
 ```
 
+## Hard Writes
+
+To keep handshakes small, Central Command can hard-write a group of older event IDs into one block ID.
+
+Example use cases:
+
+- Compact claims from the previous day or previous phase.
+- Package the initial creation-event set.
+- Seal the final accepted event set after the game-end collection window.
+
+Behavior:
+
+1. Central Command selects a set of already-accepted event UIDs.
+2. Central Command emits an `admin_hard_write` event with a new `blockId` and the covered `eventIds`.
+3. Devices that receive the hard-write event store the block mapping and can announce the block ID in future handshakes instead of every covered UID.
+4. When a peer is missing a hard-write block, it requests the block contents and runs a full validation/claim check over the contained events at ingestion time.
+5. After a block is known, handshake UID lists may include the block ID plus any events newer than that block.
+
+Hard writes do not delete history. They create a compact sync alias for a known event set.
+
 ## Mesh Sync Protocol
 
-The current skeleton has a TCP peer sync that sends all claim events to connected peers. The production protocol should evolve toward UID-based delta exchange for both claim events and admin events.
+The current skeleton has a TCP peer sync that sends all claim events to connected peers. The production protocol should evolve toward UID-based delta exchange for both claim events and admin events, with hard-write block IDs as compact aliases for older ranges.
 
 ### Handshake
 
-When two nodes connect:
+When two nodes connect, they should exchange UID inventories before applying missing events. That gives both sides a shorter round-trip to learn what the other already has.
 
-1. Node A sends `hello` with device metadata, game ID, protocol version, and known event UIDs.
-2. Node B compares A's UID list to its local UID list. Each UID may refer to a claim event or an admin event.
-3. Node B sends `request_events` for UIDs it is missing.
-4. Node B sends its own UID list or a compact summary.
-5. Node A requests missing UIDs from B.
-6. Both nodes import valid events and rebuild their current game state.
-7. Newly imported events are relayed to connected peers.
+Recommended order:
+
+1. Node A sends `hello` with user/device metadata, game ID, protocol version, known event UIDs, and known hard-write block IDs.
+2. Node B immediately replies with its own `hello` inventory before requesting or importing events.
+3. Each node diffs the peer inventory against its local inventory.
+4. Each node sends `request_events` for UIDs/blocks it is missing.
+5. Peers respond with `events` payloads for requested UIDs/blocks.
+6. Both nodes validate and import missing events, update `last_handshake_at`, and rebuild local game state.
+7. Newly imported valid events are relayed to other connected peers that have not announced those UIDs.
 
 ```mermaid
 sequenceDiagram
@@ -574,43 +654,45 @@ sequenceDiagram
   participant BuilderA as Game State Builder A
   participant BuilderB as Game State Builder B
 
-  A->>B: hello(gameId, protocolVersion, knownEventUids)
-  Note over A,B: UIDs may identify claim events or admin events
-  B->>StoreB: Compare Node A UIDs with local event UIDs
+  A->>B: hello(gameId, protocolVersion, knownEventUids, hardWriteBlockIds)
+  B->>A: hello(gameId, protocolVersion, knownEventUids, hardWriteBlockIds)
+  Note over A,B: Both inventories are exchanged before rectifying
   B->>A: request_events(missingFromB)
-  A->>B: events(requested envelopes)
-  B->>StoreB: Validate envelopes, verify admin signatures, insert valid events
-  B->>BuilderB: Rebuild current game state
-
-  B->>A: hello(gameId, protocolVersion, knownEventUids)
-  A->>StoreA: Compare Node B UIDs with local event UIDs
   A->>B: request_events(missingFromA)
-  B->>A: events(requested envelopes)
-  A->>StoreA: Validate envelopes, verify admin signatures, insert valid events
-  A->>BuilderA: Rebuild current game state
-
-  A-->>B: event_announcement(newlyImportedClaimOrAdminUids)
-  B-->>A: event_announcement(newlyImportedClaimOrAdminUids)
+  A->>B: events(requested envelopes or hard-write block contents)
+  B->>A: events(requested envelopes or hard-write block contents)
+  B->>StoreB: Validate, insert valid events/blocks
+  A->>StoreA: Validate, insert valid events/blocks
+  B->>BuilderB: Rebuild local JSON game state
+  A->>BuilderA: Rebuild local JSON game state
+  A-->>B: event_announcement(newlyImportedUids)
+  B-->>A: event_announcement(newlyImportedUids)
 ```
+
+### Relay
+
+Relay is required for multi-hop propagation and should be treated as a first-class part of the protocol, not only a handshake footnote.
+
+Relay rules:
+
+- After a node imports a valid new event or hard-write block, it announces that UID/block to its other connected peers.
+- Peers that already know the UID acknowledge or ignore the announcement.
+- Peers that are missing the UID send `request_events` and import it normally.
+- Never relay events that fail validation.
+- Insert events idempotently by UID.
+- Limit message size by chunking UID lists, hard-write block contents, and event payloads.
+- Keep transport independent from domain rules so Bluetooth, Wi-Fi Direct, local TCP, or another bearer can be swapped in later.
 
 ### Message Types
 
 Recommended starting message set:
 
-- `hello`: device metadata, game ID, protocol version, event UID list or digest. Event UIDs may represent claim events or admin events.
-- `request_events`: event UID list requested from a peer.
-- `events`: full event bodies.
-- `event_announcement`: newly available event UIDs.
+- `hello`: user metadata, game ID, protocol version, event UID list and/or hard-write block IDs.
+- `request_events`: event UID / hard-write block ID list requested from a peer.
+- `events`: full event bodies or hard-write block contents.
+- `event_announcement`: newly available event UIDs or hard-write block IDs.
 - `admin_announcement`: optional high-priority admin event announcement.
 - `error`: protocol or validation failure.
-
-### Relay Rules
-
-- Insert events idempotently by UID.
-- Never relay events that fail validation.
-- Relay newly imported valid events to peers that have not announced the UID.
-- Limit message size by chunking UID lists and event payloads.
-- Keep transport independent from domain rules so Bluetooth, Wi-Fi Direct, local TCP, or another bearer can be swapped in later.
 
 ## Offline and Consistency Model
 
@@ -620,113 +702,107 @@ Expected behavior:
 
 - A phone can create a claim with no network connection.
 - Nearby phones may not see the claim immediately.
-- When phones connect, they exchange missing events.
-- Each phone recomputes winners and scores from the same deterministic rules.
+- When phones connect, they exchange inventories first, then missing events.
+- Each phone rebuilds winners and scores from the same deterministic rules.
 - Once all devices have the same valid event set, they show the same game state.
 
-The UI should communicate sync status clearly. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the earliest valid claim wins.
+The UI should communicate sync status clearly, including `last_handshake_at`. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the earliest valid claim wins.
 
 ## Security Model
 
 First version:
 
-- Claim events are trusted enough for gameplay but auditable after the fact.
-- Admin events must be signed by Central Command.
-- Devices store the Central Command public key in the initial game package.
-- Invalid signatures are rejected and not relayed.
-- Event IDs and hashes prevent accidental duplication and make tampering visible.
-
-Future hardening:
-
-- Sign player claim events with per-device keys.
-- Use QR or NFC enrollment for trusted devices.
-- Add event hash chaining per origin device.
-- Add admin sequence numbers to prevent replay of stale admin changes.
-- Encrypt mesh payloads if game data or participant identity needs privacy.
+- Claim events and admin events are trusted enough for gameplay and auditable after the fact.
+- Cryptographic signatures are out of scope for v1.
+- Event IDs and optional hashes help detect accidental duplication and make some forms of tampering visible during host review.
 
 ## Central Command Flow
 
 ### Before the Game
 
-1. Host creates a game package with tasks, teams, points, colors, and admin public key.
-2. Player devices import the package before entering the no-signal environment.
-3. Each device creates or loads its local device ID.
-4. Each device initializes SQLite with the game package.
+1. Host creates a game package as individual creation events for tasks, teams, points, colors, phases, and categories.
+2. Those creation events are packaged into a hard-write block for efficient distribution.
+3. Player devices import the package before entering the no-signal environment.
+4. Each device creates or loads its local user ID.
+5. Each device initializes SQLite and builds the initial JSON game-state document.
 
 ### During the Game
 
 1. Players claim tasks locally.
-2. Devices exchange claim and admin events through the mesh.
+2. Devices exchange claim and admin events through the mesh, including relay to multi-hop peers.
 3. Central Command creates admin events as needed and increments the game version.
-4. Admin events propagate through the mesh.
-5. Devices verify admin signatures, record the new game version, and rebuild their current game state.
+4. Central Command may hard-write older event groups to keep handshakes small.
+5. Devices validate admin events, record the new game version, and rebuild their current game state.
 
 ```mermaid
 flowchart TD
-  setup[Central Command Creates Game Package v1.0.0] --> distribute[Distribute Package to Android/iOS Devices]
-  distribute --> initialize[Initialize SQLite Seeds and Device ID]
+  setup[Central Command Creates Creation Events] --> block[Package Start Events Into Hard-Write Block]
+  block --> distribute[Distribute Package to Android/iOS Devices]
+  distribute --> initialize[Initialize SQLite and User ID]
   initialize --> phase1[Phase 1 Active]
 
-  phase1 --> claims[Players Create claim_created Envelopes]
-  claims --> mesh[Mesh Exchanges Claim/Admin Event UIDs]
+  phase1 --> claims[Players Create claim_created Events]
+  claims --> mesh[Mesh Exchanges Event UIDs and Hard-Write Block IDs]
 
   admin_action[Central Command Admin Action] --> classify{Version Impact}
   classify -->|patch| patch[Reset Claim or Small Correction]
   classify -->|minor| minor[Start Phase, Add Team, Large Task Change]
-  classify -->|major| major[Full Redeployment]
+  classify -->|major| major[Require App Update for New Major]
 
   patch --> increment_patch[Increment Patch Version]
   minor --> increment_minor[Increment Minor Version]
-  major --> restart[Restart Active Match Instead of Mesh Merge]
+  major --> update_prompt[Prompt Player To Update App]
 
-  increment_patch --> sign[Sign Admin Envelope]
-  increment_minor --> sign
-  sign --> mesh
+  increment_patch --> emit[Emit Admin Event]
+  increment_minor --> emit
+  emit --> mesh
 
-  mesh --> verify[Verify Envelope, Signature, Hash, Version]
+  mesh --> verify[Validate Envelope, Optional Hash, Version]
   verify --> store[(SQLite Append-Only events)]
   store --> builder[Game State Builder]
-  builder --> state[Tasks by Phase/Category, Rankings, Search, Winners]
+  builder --> state[Local JSON State for UI]
   state --> export[Central Command Collects and Exports Final Chain]
 ```
 
 ### After the Game
 
-1. Central Command gathers event chains from nearby devices.
-2. Hosts inspect conflicts, invalidated claims, and final scores.
-3. The final chain can be exported as JSON or CSV.
+1. Central Command emits `admin_game_ended` and keeps the collection window open.
+2. Devices continue syncing claims that occurred before game end.
+3. When the collection window closes, Central Command hard-writes the final accepted event set.
+4. Hosts inspect conflicts, invalidated claims, and final scores.
+5. The final chain can be exported as JSON or CSV.
 
 ## Implementation Plan
 
 ### Phase 1: Match the Spike Locally
 
-- Add points to the mobile task model and SQLite schema.
+- Ensure points exist on the mobile task model and SQLite schema.
 - Add score totals to the mobile UI.
 - Add explicit team selection instead of claim buttons for every team.
-- Add task categories and task search to the mobile UI.
+- Add task categories, including a `Completed` category for claimed tasks.
+- Add task-description search to the mobile UI.
 - Preserve first-claim-wins behavior in the game state builder.
 - Keep the current simple peer sync as a development aid.
 
 ### Phase 2: Event Chain Unification
 
-- Replace `claim_events`-only sync with a generic `events` table.
+- Replace `claim_events`-only sync with a generic `events` table keyed by user ID.
 - Represent claim events and admin packages with a common envelope.
-- Make the game state builder derive tasks, phases, categories, claims, resets, team names, rankings, and scores from events.
+- Store a local JSON game-state document produced by replaying events.
+- Add a manual rebuild-state action.
 - Add deterministic validation and conflict resolution tests.
 
 ### Phase 3: UID-Based Mesh Sync
 
-- Change handshakes to exchange event UID lists or digests.
+- Change handshakes to exchange inventories first, then request missing UIDs.
 - Add missing-event requests.
-- Add event announcements and relaying.
-- Add chunking for large chains.
-- Track peer sync metadata in SQLite.
+- Add event announcements and multi-hop relaying.
+- Add hard-write blocks for compact sync of older event groups.
+- Track peer sync metadata, including `last_handshake_at`, in SQLite.
 
 ### Phase 4: Central Command Admin Packages
 
-- Define admin event schemas.
-- Add signing in Central Command.
-- Add signature verification in the mobile app.
+- Define admin event schemas, including game end and hard write.
 - Implement task add/update/delete, phase start, category update, team rename, and claim reset behavior in the game state builder.
 - Add host-facing export/import tooling.
 
@@ -735,6 +811,7 @@ flowchart TD
 - Add phase scheduling or host-triggered phase start behavior.
 - Carry unclaimed tasks forward into later phases.
 - Increase `current_points` for unclaimed tasks from previous phases.
+- Gray out claimed tasks and move them into `Completed`.
 - Add hidden-point display mode while preserving team rankings.
 - Add Central Command controls for phase release and point visibility.
 
@@ -749,21 +826,20 @@ flowchart TD
 
 ## Testing Strategy
 
-- Domain unit tests for claim ordering, score totals, rankings, phase rollover, task resets, task admin events, and invalid event handling.
-- SQLite tests for migrations, idempotent imports, task search, and current-state queries.
-- Protocol tests for handshake diffing, missing UID requests, duplicate imports, and relay behavior.
+- Domain unit tests for claim ordering, score totals, rankings, phase rollover, task resets, task admin events, hard-write ingestion, game-end collection windows, and invalid event handling.
+- SQLite tests for migrations, idempotent imports, task-description search, and current-state queries.
+- Protocol tests for inventory-first handshake diffing, missing UID requests, hard-write block exchange, duplicate imports, and relay behavior.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
-- Admin package tests for valid signatures, invalid signatures, replay attempts, and reset behavior.
+- State rebuild tests proving full replay matches the UI state document after conflicts and admin resets.
 
 ## Open Questions
 
 - What mesh bearer should be used first for the no-signal environment: Bluetooth LE, Wi-Fi Direct, local Wi-Fi TCP, or a hybrid?
 - Should Central Command be a separate app, an admin mode in the React Native app, or a desktop/local web app?
 - How will devices receive the initial game package: QR code, file import, local network, or pre-bundled seed data?
-- Do player claim events need signatures in the first playable version?
 - Should claim ordering use device timestamps only, or should Central Command/admin review have the final say for close conflicts?
 - How large can the game get in expected use: task count, player count, team count, and event count?
 - Should phases start at scheduled times, by Central Command action, or both?
 - How much should unclaimed task point values increase between phases?
 - Should players see exact score totals, rank order only, or a hybrid display?
-
+- What happens to existing claims and scores when a team is removed mid-game?
