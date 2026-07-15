@@ -191,9 +191,8 @@ This should become the canonical append-only chain.
 - `created_at`: sender timestamp.
 - `received_at`: local ingest timestamp.
 - `device_id`: originating node.
-- `team_id`: optional, required for player claim events.
-- `payload_json`: typed payload.
-- `signature`: optional for player claims, required for admin events.
+- `payload_json`: typed event-specific payload.
+- `signature`: stable envelope field; nullable for player claims and required for admin events.
 - `hash`: canonical hash of the event body.
 - `previous_hash`: optional link for events created by the same origin.
 - `source`: `local`, `peer`, `seed`, or `admin`.
@@ -217,26 +216,55 @@ Optional but useful later for diagnostics.
 
 ## Event Types
 
+All events should use the same top-level envelope so storage, hashing, signature verification, and mesh routing can treat claim events and admin events uniformly. Event-specific data belongs in `payload`.
+
+Example envelope:
+
+```json
+{
+  "id": "event-uid",
+  "type": "claim_created",
+  "gameId": "human-haunt-2026",
+  "gameVersion": "1.2.3",
+  "createdAt": 1784131200000,
+  "deviceId": "phone-a",
+  "signature": null,
+  "hash": "...",
+  "previousHash": null,
+  "payload": {}
+}
+```
+
 ### Claim Event
 
 A claim event records a team claiming a task.
 
-Payload:
+Example:
 
 ```json
 {
-  "taskId": "task-biff-lime",
-  "teamId": "team-1",
+  "id": "claim-100",
+  "type": "claim_created",
+  "gameId": "human-haunt-2026",
   "gameVersion": "1.2.3",
-  "claimedAt": 1784131200000
+  "createdAt": 1784131200000,
+  "deviceId": "phone-a",
+  "signature": null,
+  "hash": "...",
+  "previousHash": null,
+  "payload": {
+    "taskId": "task-biff-lime",
+    "teamId": "team-1",
+    "claimedAt": 1784131200000
+  }
 }
 ```
 
 Validation rules:
 
-- `taskId` must reference a known active task at the time the event is applied.
-- `teamId` must reference a known active team.
-- `gameVersion` must match the current active game version on the device when the claim is created.
+- `payload.taskId` must reference a known active task at the time the event is applied.
+- `payload.teamId` must reference a known active team.
+- Envelope `gameVersion` must match the current active game version on the device when the claim is created.
 - Duplicate event IDs are ignored.
 - If multiple teams claim the same task, the derived winner is the earliest valid claim by `claimedAt`, with event ID as the deterministic tie-breaker.
 
@@ -244,16 +272,16 @@ Validation rules:
 
 An admin package is an event created by Central Command. It uses the same mesh propagation mechanics as claim events but requires admin signature verification.
 
-Each admin package includes the game version it produces. When Central Command pushes an admin change, it increments the game version and signs the resulting admin event.
+Each admin package envelope includes the game version it produces. When Central Command pushes an admin change, it increments the game version and signs the resulting admin event.
 
 Payload examples:
 
-- Add task: `{ "gameVersion": "1.3.0", "taskId": "...", "title": "...", "points": 10, "sortOrder": 12 }`
-- Reset claim: `{ "gameVersion": "1.2.4", "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
-- Rename team: `{ "gameVersion": "1.3.0", "teamId": "...", "name": "Team Ghost" }`
-- Delete task: `{ "gameVersion": "1.3.0", "taskId": "..." }`
-- Start phase: `{ "gameVersion": "1.4.0", "phaseId": "...", "boostUnclaimedBy": 5 }`
-- Add category: `{ "gameVersion": "1.3.0", "categoryId": "...", "name": "Photo Tasks", "sortOrder": 1 }`
+- Add task: `{ "taskId": "...", "title": "...", "points": 10, "sortOrder": 12 }`
+- Reset claim: `{ "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
+- Rename team: `{ "teamId": "...", "name": "Team Ghost" }`
+- Delete task: `{ "taskId": "..." }`
+- Start phase: `{ "phaseId": "...", "boostUnclaimedBy": 5 }`
+- Add category: `{ "categoryId": "...", "name": "Photo Tasks", "sortOrder": 1 }`
 
 Validation rules:
 
@@ -366,6 +394,79 @@ Initial rule:
 - For each task, the winning claim is the valid claim with the earliest `claimedAt`.
 - Ties are resolved by lexicographic event ID.
 - Admin reset events can invalidate a claim, causing the game state builder to choose the next earliest valid claim or reopen the task.
+
+Example event chain:
+
+```json
+[
+  {
+    "id": "admin-001",
+    "type": "admin_game_created",
+    "gameId": "human-haunt-2026",
+    "gameVersion": "1.0.0",
+    "createdAt": 1784130000000,
+    "deviceId": "central-command",
+    "signature": "central-command-signature-admin-001",
+    "hash": "hash-admin-001",
+    "previousHash": null,
+    "payload": {
+      "teams": ["team-1", "team-2"],
+      "phaseId": "phase-1",
+      "taskIds": ["task-photo-booth", "task-find-ghost"]
+    }
+  },
+  {
+    "id": "claim-100",
+    "type": "claim_created",
+    "gameId": "human-haunt-2026",
+    "gameVersion": "1.0.0",
+    "createdAt": 1784131200000,
+    "deviceId": "phone-a",
+    "signature": null,
+    "hash": "hash-claim-100",
+    "previousHash": null,
+    "payload": {
+      "taskId": "task-photo-booth",
+      "teamId": "team-1",
+      "claimedAt": 1784131200000
+    }
+  },
+  {
+    "id": "claim-200",
+    "type": "claim_created",
+    "gameId": "human-haunt-2026",
+    "gameVersion": "1.0.0",
+    "createdAt": 1784131320000,
+    "deviceId": "phone-b",
+    "signature": null,
+    "hash": "hash-claim-200",
+    "previousHash": null,
+    "payload": {
+      "taskId": "task-photo-booth",
+      "teamId": "team-2",
+      "claimedAt": 1784131320000
+    }
+  },
+  {
+    "id": "admin-002",
+    "type": "admin_claim_reset",
+    "gameId": "human-haunt-2026",
+    "gameVersion": "1.0.1",
+    "createdAt": 1784132400000,
+    "deviceId": "central-command",
+    "signature": "central-command-signature-admin-002",
+    "hash": "hash-admin-002",
+    "previousHash": "hash-admin-001",
+    "payload": {
+      "taskId": "task-photo-booth",
+      "claimEventId": "claim-100",
+      "reason": "false claim"
+    }
+  }
+]
+```
+
+In this chain, `claim-100` initially wins because it is earlier than `claim-200`. After `admin-002` is applied, `claim-100` is invalidated and the Game State Builder chooses `claim-200` as the current winner. The claim events remain in the chain for audit history.
 
 ```mermaid
 flowchart LR
