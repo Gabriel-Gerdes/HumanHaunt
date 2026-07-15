@@ -16,8 +16,13 @@ The repository currently contains:
 ## Goals
 
 - Show players a pre-seeded task list.
+- Support multi-phase events where each phase releases a new list of tasks.
+- Carry unclaimed tasks from previous phases forward with increased point value.
 - Let a player select the team they are playing for.
 - Let a team claim an open task and receive the task's points.
+- Optionally hide exact task point values while still showing current team rankings.
+- Group tasks into categories for easier navigation.
+- Provide task search.
 - Preserve lockout behavior: only one team should win a task in the derived game state.
 - Work with no cell signal and no central internet service.
 - Propagate claim events through nearby devices using an offline mesh.
@@ -60,6 +65,7 @@ Primary responsibilities:
 - Initialize a game package with tasks, teams, and settings.
 - Let the user choose their team.
 - Display tasks, claim status, and score totals.
+- Display task categories, task search, active phase context, and team rankings.
 - Create local claim events.
 - Store events in SQLite.
 - Sync claim and admin events with nearby peers.
@@ -134,14 +140,38 @@ Recommended core tables:
 
 - `id`
 - `game_id`
+- `phase_id`
+- `category_id`
 - `title`
-- `points`
+- `base_points`
+- `current_points`
+- `points_visible`
 - `sort_order`
 - `active`
 - `created_by_event_id`
 - `updated_by_event_id`
 
-The current mobile `Task` type does not include points yet. Points should be added before score totals are treated as complete.
+The current mobile `Task` type does not include points yet. Points should be added before score totals are treated as complete. The production model should distinguish base points from current points so unclaimed tasks can become more valuable in later phases.
+
+### `phases`
+
+- `id`
+- `game_id`
+- `name`
+- `sort_order`
+- `starts_at`
+- `ends_at`
+- `active`
+- `created_by_event_id`
+
+### `task_categories`
+
+- `id`
+- `game_id`
+- `name`
+- `sort_order`
+- `color`
+- `active`
 
 ### `devices`
 
@@ -222,6 +252,8 @@ Payload examples:
 - Reset claim: `{ "gameVersion": "1.2.4", "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
 - Rename team: `{ "gameVersion": "1.3.0", "teamId": "...", "name": "Team Ghost" }`
 - Delete task: `{ "gameVersion": "1.3.0", "taskId": "..." }`
+- Start phase: `{ "gameVersion": "1.4.0", "phaseId": "...", "boostUnclaimedBy": 5 }`
+- Add category: `{ "gameVersion": "1.3.0", "categoryId": "...", "name": "Photo Tasks", "sortOrder": 1 }`
 
 Validation rules:
 
@@ -257,6 +289,8 @@ Expected behavior:
 - Example increment: `1.4.2` to `1.5.0`.
 - Adding or removing a team is a minor version change.
 - Large task-list changes, scoring model changes, or other changes that alter player strategy should also be minor version changes.
+- Starting a new phase is usually a minor version change.
+- Adding or removing task categories can be a minor version change if it changes how players navigate or understand the game.
 - Devices may apply minor changes during a running match, but the UI should make the version change visible because players may see materially different game state afterward.
 
 ### Patch Admin Actions
@@ -268,7 +302,52 @@ Expected behavior:
 - Example increment: `1.4.2` to `1.4.3`.
 - Resetting a false claim is a patch version change.
 - Correcting a typo, adjusting a task description, or making a small task correction can be a patch version change if it does not materially alter player strategy.
+- Small category label corrections can be a patch version change.
 - Patch changes should propagate through the mesh and rebuild current game state without requiring a match restart.
+
+## Phases, Rankings, and Task Discovery
+
+HumanHaunt should support events that span multiple phases. A phase is a time-boxed or host-triggered segment of the game with its own newly released tasks.
+
+### Phase Behavior
+
+- Each phase can release a new list of possible tasks.
+- Tasks from earlier phases remain visible if they were not claimed.
+- Unclaimed tasks from previous phases should carry forward with increased `current_points`.
+- Claimed tasks stay claimed when the phase changes unless an admin package resets the claim.
+- Phase changes should be admin events so they propagate through the mesh and are included in the event chain.
+- Starting a new phase should increment the game version. In most cases this should be a minor version change because the available task pool and team strategy are materially affected.
+
+### Hidden Point Values and Rankings
+
+The app may hide exact task point values from players while still showing current team rankings.
+
+Expected behavior:
+
+- The game state builder should always calculate scores from actual `current_points`.
+- The player UI can hide exact point values when `points_visible` is false.
+- The UI should still show team rank order and relative standing.
+- Central Command should always be able to view actual point values and final score calculations.
+
+### Task Categories
+
+Tasks should be grouped into categories in the UI for easier navigation.
+
+Examples:
+
+- Photo tasks
+- Location tasks
+- Social tasks
+- Bonus tasks
+- Phase-specific tasks
+
+Categories should be part of the game package and mutable through signed admin events when needed.
+
+### Task Search
+
+The mobile app should provide task search so players can quickly find tasks by title, category, phase, and possibly hint text.
+
+Search should work entirely offline against the local SQLite state and should respect the same visibility rules as the main task list.
 
 ## Claim Event Chain
 
@@ -477,6 +556,7 @@ flowchart TD
 - Add points to the mobile task model and SQLite schema.
 - Add score totals to the mobile UI.
 - Add explicit team selection instead of claim buttons for every team.
+- Add task categories and task search to the mobile UI.
 - Preserve first-claim-wins behavior in the game state builder.
 - Keep the current simple peer sync as a development aid.
 
@@ -484,7 +564,7 @@ flowchart TD
 
 - Replace `claim_events`-only sync with a generic `events` table.
 - Represent claim events and admin packages with a common envelope.
-- Make the game state builder derive tasks, claims, resets, team names, and scores from events.
+- Make the game state builder derive tasks, phases, categories, claims, resets, team names, rankings, and scores from events.
 - Add deterministic validation and conflict resolution tests.
 
 ### Phase 3: UID-Based Mesh Sync
@@ -500,10 +580,18 @@ flowchart TD
 - Define admin event schemas.
 - Add signing in Central Command.
 - Add signature verification in the mobile app.
-- Implement task add/update/delete, team rename, and claim reset behavior in the game state builder.
+- Implement task add/update/delete, phase start, category update, team rename, and claim reset behavior in the game state builder.
 - Add host-facing export/import tooling.
 
-### Phase 5: Production Hardening
+### Phase 5: Multi-Phase Gameplay
+
+- Add phase scheduling or host-triggered phase start behavior.
+- Carry unclaimed tasks forward into later phases.
+- Increase `current_points` for unclaimed tasks from previous phases.
+- Add hidden-point display mode while preserving team rankings.
+- Add Central Command controls for phase release and point visibility.
+
+### Phase 6: Production Hardening
 
 - Decide the production mesh bearer for Android and iOS.
 - Add reconnect, retry, and backoff behavior.
@@ -514,8 +602,8 @@ flowchart TD
 
 ## Testing Strategy
 
-- Domain unit tests for claim ordering, score totals, task resets, task admin events, and invalid event handling.
-- SQLite tests for migrations, idempotent imports, and current-state queries.
+- Domain unit tests for claim ordering, score totals, rankings, phase rollover, task resets, task admin events, and invalid event handling.
+- SQLite tests for migrations, idempotent imports, task search, and current-state queries.
 - Protocol tests for handshake diffing, missing UID requests, duplicate imports, and relay behavior.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
 - Admin package tests for valid signatures, invalid signatures, replay attempts, and reset behavior.
@@ -528,4 +616,7 @@ flowchart TD
 - Do player claim events need signatures in the first playable version?
 - Should claim ordering use device timestamps only, or should Central Command/admin review have the final say for close conflicts?
 - How large can the game get in expected use: task count, player count, team count, and event count?
+- Should phases start at scheduled times, by Central Command action, or both?
+- How much should unclaimed task point values increase between phases?
+- Should players see exact score totals, rank order only, or a hybrid display?
 
