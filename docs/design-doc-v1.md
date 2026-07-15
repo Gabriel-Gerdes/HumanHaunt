@@ -101,17 +101,25 @@ The app should avoid treating mutable task rows as the source of truth. Mutable 
 
 ```mermaid
 flowchart TD
-  player[Player] --> mobile_ui[Mobile UI]
-  mobile_ui --> game_state_builder[Game State Builder]
-  game_state_builder --> sqlite[(SQLite Local Store)]
-  mobile_ui --> mesh[Mesh Transport Layer]
-  mesh --> sqlite
-  mesh <--> peer_devices[Nearby Player Devices]
-  central[Central Command] --> admin_packages[Signed Admin Packages]
-  admin_packages --> mesh
-  sqlite --> game_state_builder
-  game_state_builder --> views[Tasks, Scores, Claim Status]
-  views --> mobile_ui
+  player[Player] --> rn_app[React Native Android/iOS App]
+  rn_app --> ui[Task List, Search, Rankings, Sync Status]
+  rn_app --> claim_creator[Claim Event Creator]
+  claim_creator --> claim_envelope[claim_created Event Envelope]
+
+  central[Central Command] --> admin_creator[Versioned Admin Event Creator]
+  admin_creator --> admin_envelope[Signed Admin Event Envelope]
+
+  claim_envelope --> validator[Event Validation]
+  admin_envelope --> validator
+  mesh[Mesh Transport] <--> peers[Nearby Player Devices]
+  mesh --> validator
+  validator --> events[(SQLite events)]
+  validator --> mesh
+
+  events --> builder[Game State Builder]
+  seed[(SQLite games, teams, tasks, phases, categories)] --> builder
+  builder --> current_state[Current Tasks, Winners, Scores, Rankings]
+  current_state --> ui
 ```
 
 ## Data Model
@@ -470,18 +478,26 @@ In this chain, `claim-100` initially wins because it is earlier than `claim-200`
 
 ```mermaid
 flowchart LR
-  seed[Initial Game Package] --> event_log[(Append-Only Event Chain)]
-  local_claim[Local Claim Event] --> validate_claim{Valid Claim?}
-  peer_event[Imported Peer Event] --> validate_claim
-  admin_event[Signed Admin Event] --> verify_admin{Signature Valid?}
-  verify_admin -->|yes| event_log
-  verify_admin -->|no| reject_admin[Reject and Do Not Relay]
-  validate_claim -->|yes| event_log
-  validate_claim -->|no| reject_claim[Reject or Keep for Diagnostics]
-  event_log --> game_state_builder[Game State Builder]
-  game_state_builder --> winners[Task Winners]
-  game_state_builder --> scores[Team Scores]
-  game_state_builder --> active_tasks[Active Task List]
+  local_claim[Local claim_created Envelope] --> validate[Validate Common Envelope]
+  peer_claim[Peer claim_created Envelope] --> validate
+  peer_admin[Peer Admin Envelope] --> validate
+  central_admin[Central Command Admin Envelope] --> validate
+
+  validate --> route{Event Type}
+  route -->|claim_created| claim_rules[Validate task, team, gameVersion]
+  route -->|admin_*| admin_rules[Verify signature and version change]
+
+  claim_rules -->|valid| event_log[(SQLite Append-Only events)]
+  admin_rules -->|valid| event_log
+  claim_rules -->|invalid| reject[Reject and Do Not Relay]
+  admin_rules -->|invalid| reject
+
+  seed[(Seeded games, teams, tasks, phases, categories)] --> builder[Game State Builder]
+  event_log --> builder
+  builder --> tasks[Visible Tasks by Phase and Category]
+  builder --> winners[Task Winners and Resets]
+  builder --> rankings[Team Scores and Rankings]
+  builder --> search[Offline Search Index/View]
 ```
 
 ### Reconciliation Example
@@ -498,8 +514,8 @@ sequenceDiagram
   participant BuilderB as Game State Builder B
 
   Note over A,B: Devices are offline and cannot see each other
-  A->>StoreA: Insert claim-100<br/>task: Photo Booth<br/>team: Team 1<br/>claimedAt: 10:03
-  B->>StoreB: Insert claim-200<br/>task: Photo Booth<br/>team: Team 2<br/>claimedAt: 10:05
+  A->>StoreA: Insert claim-100 envelope<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 1<br/>payload.claimedAt: 10:03
+  B->>StoreB: Insert claim-200 envelope<br/>payload.taskId: Photo Booth<br/>payload.teamId: Team 2<br/>payload.claimedAt: 10:05
   BuilderA->>StoreA: Build current game state
   StoreA-->>BuilderA: claim-100 only
   BuilderA-->>A: Photo Booth winner: Team 1
@@ -510,10 +526,10 @@ sequenceDiagram
   Note over A,B: Devices reconnect and exchange event UID lists
   A->>B: hello([claim-100])
   B->>A: request_events([claim-100])
-  A->>B: events([claim-100])
+  A->>B: events([claim-100 envelope])
   B->>A: hello([claim-200])
   A->>B: request_events([claim-200])
-  B->>A: events([claim-200])
+  B->>A: events([claim-200 envelope])
 
   A->>StoreA: Insert missing claim-200
   B->>StoreB: Insert missing claim-100
@@ -523,6 +539,14 @@ sequenceDiagram
   StoreB-->>BuilderB: claim-100 and claim-200
   BuilderA-->>A: Photo Booth winner: Team 1<br/>claim-100 was earlier
   BuilderB-->>B: Photo Booth winner: Team 1<br/>claim-100 was earlier
+
+  Note over A,B: Later, Central Command reset also syncs as an admin event UID
+  A->>B: event_announcement([admin-002])
+  B->>A: request_events([admin-002])
+  A->>B: events([admin-002 signed envelope])
+  B->>StoreB: Verify signature and insert admin-002
+  BuilderB->>StoreB: Rebuild current game state
+  BuilderB-->>B: Photo Booth winner: Team 2<br/>claim-100 was reset
 ```
 
 ## Mesh Sync Protocol
@@ -545,18 +569,28 @@ When two nodes connect:
 sequenceDiagram
   participant A as Node A
   participant B as Node B
+  participant StoreA as SQLite A
+  participant StoreB as SQLite B
+  participant BuilderA as Game State Builder A
+  participant BuilderB as Game State Builder B
+
   A->>B: hello(gameId, protocolVersion, knownEventUids)
-  B->>B: Compare Node A UIDs with local chain
+  Note over A,B: UIDs may identify claim events or admin events
+  B->>StoreB: Compare Node A UIDs with local event UIDs
   B->>A: request_events(missingFromB)
-  A->>B: events(requestedByB)
+  A->>B: events(requested envelopes)
+  B->>StoreB: Validate envelopes, verify admin signatures, insert valid events
+  B->>BuilderB: Rebuild current game state
+
   B->>A: hello(gameId, protocolVersion, knownEventUids)
-  A->>A: Compare Node B UIDs with local chain
+  A->>StoreA: Compare Node B UIDs with local event UIDs
   A->>B: request_events(missingFromA)
-  B->>A: events(requestedByA)
-  A->>A: Validate, insert, rebuild current game state
-  B->>B: Validate, insert, rebuild current game state
-  A-->>B: event_announcement(newlyImportedUids)
-  B-->>A: event_announcement(newlyImportedUids)
+  B->>A: events(requested envelopes)
+  A->>StoreA: Validate envelopes, verify admin signatures, insert valid events
+  A->>BuilderA: Rebuild current game state
+
+  A-->>B: event_announcement(newlyImportedClaimOrAdminUids)
+  B-->>A: event_announcement(newlyImportedClaimOrAdminUids)
 ```
 
 ### Message Types
@@ -629,19 +663,31 @@ Future hardening:
 
 ```mermaid
 flowchart TD
-  setup[Host Creates Game Package] --> distribute[Distribute Package to Devices]
-  distribute --> initialize[Devices Initialize SQLite]
-  initialize --> play[Players Claim Tasks Offline]
-  play --> claim_events[Claim Events Enter Mesh]
-  command[Central Command Creates Admin Package] --> increment[Increment Game Version]
-  increment --> sign[Sign Admin Event]
-  sign --> inject[Inject Into Mesh]
-  inject --> verify[Devices Verify Signature]
-  claim_events --> sync[Devices Exchange Missing Claim/Admin Event UIDs]
-  verify --> sync
-  sync --> project[Rebuild Current Game State]
-  project --> final_state[Converged Tasks and Scores]
-  final_state --> export[Central Command Exports Final Chain]
+  setup[Central Command Creates Game Package v1.0.0] --> distribute[Distribute Package to Android/iOS Devices]
+  distribute --> initialize[Initialize SQLite Seeds and Device ID]
+  initialize --> phase1[Phase 1 Active]
+
+  phase1 --> claims[Players Create claim_created Envelopes]
+  claims --> mesh[Mesh Exchanges Claim/Admin Event UIDs]
+
+  admin_action[Central Command Admin Action] --> classify{Version Impact}
+  classify -->|patch| patch[Reset Claim or Small Correction]
+  classify -->|minor| minor[Start Phase, Add Team, Large Task Change]
+  classify -->|major| major[Full Redeployment]
+
+  patch --> increment_patch[Increment Patch Version]
+  minor --> increment_minor[Increment Minor Version]
+  major --> restart[Restart Active Match Instead of Mesh Merge]
+
+  increment_patch --> sign[Sign Admin Envelope]
+  increment_minor --> sign
+  sign --> mesh
+
+  mesh --> verify[Verify Envelope, Signature, Hash, Version]
+  verify --> store[(SQLite Append-Only events)]
+  store --> builder[Game State Builder]
+  builder --> state[Tasks by Phase/Category, Rankings, Search, Winners]
+  state --> export[Central Command Collects and Exports Final Chain]
 ```
 
 ### After the Game
