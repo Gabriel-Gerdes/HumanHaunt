@@ -1,0 +1,53 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE files
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node / React Native
+node_modules/
+mobile/node_modules/
+*.jsbundle
+.metro-health-check*
+coverage/
+mobile/coverage/
+
+# Android
+.gradle/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/.cxx/
+mobile/android/app/.cxx/
+*.hprof
+
+# Keep React Native's generated debug keystore, ignore other keystores.
+*.keystore
+!mobile/android/app/debug.keystore
+
+# iOS / Xcode
+mobile/ios/Pods/
+mobile/ios/build/
+mobile/ios/DerivedData/
+mobile/ios/**/*.xcuserdata/
+mobile/ios/**/*.xcuserstate
+mobile/ios/**/*.xccheckout
+mobile/ios/**/.xcode.env.local
+
+# Ruby / Bundler
+vendor/bundle/
+mobile/vendor/bundle/
+
+# Gradle cache override used locally to avoid Windows path length issues
+gradle-cache/
