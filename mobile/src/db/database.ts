@@ -71,6 +71,9 @@ function mapTask(row: {
   title: string;
   sort_order: number;
   active: number;
+  base_points: number;
+  current_points: number;
+  points_visible: number;
 }): Task {
   return {
     id: row.id,
@@ -78,6 +81,9 @@ function mapTask(row: {
     title: row.title,
     sortOrder: row.sort_order,
     active: row.active === 1,
+    basePoints: row.base_points,
+    currentPoints: row.current_points,
+    pointsVisible: row.points_visible === 1,
   };
 }
 
@@ -144,10 +150,28 @@ async function seedDefaultGame(db: QuickSQLiteConnection) {
   for (const task of defaultTasks) {
     await db.executeAsync(
       `
-      INSERT INTO tasks (id, game_id, title, sort_order, active)
-      VALUES (?, ?, ?, ?, ?);
+      INSERT INTO tasks (
+        id,
+        game_id,
+        title,
+        sort_order,
+        active,
+        base_points,
+        current_points,
+        points_visible
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
       `,
-      [task.id, task.gameId, task.title, task.sortOrder, task.active ? 1 : 0],
+      [
+        task.id,
+        task.gameId,
+        task.title,
+        task.sortOrder,
+        task.active ? 1 : 0,
+        task.basePoints,
+        task.currentPoints,
+        task.pointsVisible ? 1 : 0,
+      ],
     );
   }
 }
@@ -215,7 +239,15 @@ export async function getGameState(): Promise<GameState> {
 
   const taskResult = await db.executeAsync(
     `
-    SELECT id, game_id, title, sort_order, active
+    SELECT
+      id,
+      game_id,
+      title,
+      sort_order,
+      active,
+      base_points,
+      current_points,
+      points_visible
     FROM tasks
     WHERE game_id = ? AND active = 1
     ORDER BY sort_order;
@@ -228,6 +260,9 @@ export async function getGameState(): Promise<GameState> {
     title: string;
     sort_order: number;
     active: number;
+    base_points: number;
+    current_points: number;
+    points_visible: number;
   }>(taskResult).map(mapTask);
 
   const claimEvents = await getClaimEvents();

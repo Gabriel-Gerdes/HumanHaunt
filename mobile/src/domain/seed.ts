@@ -39,6 +39,9 @@ export const defaultTasks: Task[] = [
     title: 'Someone Biff it on a Lime',
     sortOrder: 1,
     active: true,
+    basePoints: 10,
+    currentPoints: 10,
+    pointsVisible: true,
   },
   {
     id: 'task-tiny-pizza-car',
@@ -46,6 +49,9 @@ export const defaultTasks: Task[] = [
     title: 'Tiny Pizza Car',
     sortOrder: 2,
     active: true,
+    basePoints: 15,
+    currentPoints: 15,
+    pointsVisible: true,
   },
   {
     id: 'task-norfolk-mermaid',
@@ -53,6 +59,9 @@ export const defaultTasks: Task[] = [
     title: 'Norfolk Mermaid',
     sortOrder: 3,
     active: true,
+    basePoints: 20,
+    currentPoints: 20,
+    pointsVisible: true,
   },
   {
     id: 'task-mowhawk',
@@ -60,6 +69,9 @@ export const defaultTasks: Task[] = [
     title: 'A mowhawk',
     sortOrder: 4,
     active: true,
+    basePoints: 10,
+    currentPoints: 10,
+    pointsVisible: true,
   },
   {
     id: 'task-dog-stroller',
@@ -67,5 +79,8 @@ export const defaultTasks: Task[] = [
     title: 'Dog in stroller',
     sortOrder: 5,
     active: true,
+    basePoints: 25,
+    currentPoints: 25,
+    pointsVisible: true,
   },
 ];
