@@ -1,22 +1,40 @@
 import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-import { defaultTasks } from '../domain/seed';
+/**
+ * Bump this whenever the schema shape changes.
+ * Outdated databases are rebuilt from scratch (acceptable while the app is early).
+ * Starts at 4 so installs that recorded legacy incremental versions 1–3 also rebuild.
+ */
+export const SCHEMA_VERSION = 4;
 
-export const TARGET_SCHEMA_VERSION = 3;
+const TABLE_NAMES = [
+  'claim_events',
+  'sync_state',
+  'tasks',
+  'teams',
+  'devices',
+  'games',
+  'metadata',
+] as const;
 
 async function getSchemaVersion(db: QuickSQLiteConnection): Promise<number> {
-  const result = await db.executeAsync(
-    'SELECT value FROM metadata WHERE key = ?;',
-    ['schema_version'],
-  );
-  const row = (result.rows?._array ?? [])[0] as { value: string } | undefined;
+  try {
+    const result = await db.executeAsync(
+      'SELECT value FROM metadata WHERE key = ?;',
+      ['schema_version'],
+    );
+    const row = (result.rows?._array ?? [])[0] as { value: string } | undefined;
 
-  if (!row) {
+    if (!row) {
+      return 0;
+    }
+
+    const parsed = Number.parseInt(row.value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    // metadata table may not exist yet on a brand-new database.
     return 0;
   }
-
-  const parsed = Number.parseInt(row.value, 10);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 async function setSchemaVersion(db: QuickSQLiteConnection, version: number) {
@@ -26,16 +44,28 @@ async function setSchemaVersion(db: QuickSQLiteConnection, version: number) {
   );
 }
 
-async function createBaseSchema(db: QuickSQLiteConnection) {
+async function dropAllTables(db: QuickSQLiteConnection) {
+  // Disable FK checks so drop order does not matter.
+  await db.executeAsync('PRAGMA foreign_keys = OFF;');
+
+  for (const tableName of TABLE_NAMES) {
+    await db.executeAsync(`DROP TABLE IF EXISTS ${tableName};`);
+  }
+
+  await db.executeAsync('PRAGMA foreign_keys = ON;');
+}
+
+/** Creates the full current schema. Safe to call only on an empty database. */
+export async function createSchema(db: QuickSQLiteConnection) {
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS metadata (
+    CREATE TABLE metadata (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS games (
+    CREATE TABLE games (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
       created_at INTEGER NOT NULL
@@ -43,7 +73,7 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS teams (
+    CREATE TABLE teams (
       id TEXT PRIMARY KEY NOT NULL,
       game_id TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -54,7 +84,7 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS tasks (
+    CREATE TABLE tasks (
       id TEXT PRIMARY KEY NOT NULL,
       game_id TEXT NOT NULL,
       title TEXT NOT NULL,
@@ -68,7 +98,7 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS devices (
+    CREATE TABLE devices (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
       created_at INTEGER NOT NULL,
@@ -77,7 +107,7 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS claim_events (
+    CREATE TABLE claim_events (
       id TEXT PRIMARY KEY NOT NULL,
       game_id TEXT NOT NULL,
       task_id TEXT NOT NULL,
@@ -94,7 +124,7 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE TABLE IF NOT EXISTS sync_state (
+    CREATE TABLE sync_state (
       peer_id TEXT PRIMARY KEY NOT NULL,
       peer_name TEXT,
       last_seen_at INTEGER NOT NULL,
@@ -103,90 +133,26 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
-    CREATE INDEX IF NOT EXISTS idx_claim_events_task_id
+    CREATE INDEX idx_claim_events_task_id
     ON claim_events(task_id);
   `);
 }
 
-async function tableHasColumn(
-  db: QuickSQLiteConnection,
-  tableName: string,
-  columnName: string,
-) {
-  const result = await db.executeAsync(`PRAGMA table_info(${tableName});`);
-  const columns = (result.rows?._array ?? []) as Array<{ name: string }>;
-  return columns.some(column => column.name === columnName);
-}
-
-async function migrateToV2(db: QuickSQLiteConnection) {
-  // Older installs created `tasks` without points columns.
-  if (!(await tableHasColumn(db, 'tasks', 'base_points'))) {
-    await db.executeAsync(
-      'ALTER TABLE tasks ADD COLUMN base_points INTEGER NOT NULL DEFAULT 0;',
-    );
-  }
-
-  if (!(await tableHasColumn(db, 'tasks', 'current_points'))) {
-    await db.executeAsync(
-      'ALTER TABLE tasks ADD COLUMN current_points INTEGER NOT NULL DEFAULT 0;',
-    );
-  }
-
-  if (!(await tableHasColumn(db, 'tasks', 'points_visible'))) {
-    await db.executeAsync(
-      'ALTER TABLE tasks ADD COLUMN points_visible INTEGER NOT NULL DEFAULT 1;',
-    );
-  }
-
-  // Backfill known seed tasks that were inserted before points existed.
-  for (const task of defaultTasks) {
-    await db.executeAsync(
-      `
-      UPDATE tasks
-      SET
-        base_points = ?,
-        current_points = ?,
-        points_visible = ?
-      WHERE id = ? AND base_points = 0 AND current_points = 0;
-      `,
-      [
-        task.basePoints,
-        task.currentPoints,
-        task.pointsVisible ? 1 : 0,
-        task.id,
-      ],
-    );
-  }
-}
-
-async function migrateToV3(db: QuickSQLiteConnection) {
-  if (!(await tableHasColumn(db, 'devices', 'selected_team_id'))) {
-    await db.executeAsync(
-      'ALTER TABLE devices ADD COLUMN selected_team_id TEXT;',
-    );
-  }
-}
-
+/**
+ * Ensures the database matches the current schema.
+ * Fresh and outdated databases are built from scratch.
+ */
 export async function runMigrations(db: QuickSQLiteConnection) {
-  await createBaseSchema(db);
+  const version = await getSchemaVersion(db);
 
-  let version = await getSchemaVersion(db);
-
-  // Fresh DB: base schema already includes the latest columns.
-  if (version === 0) {
-    await setSchemaVersion(db, TARGET_SCHEMA_VERSION);
+  if (version === SCHEMA_VERSION) {
     return;
   }
 
-  if (version < 2) {
-    await migrateToV2(db);
-    version = 2;
-    await setSchemaVersion(db, version);
+  if (version > 0) {
+    await dropAllTables(db);
   }
 
-  if (version < 3) {
-    await migrateToV3(db);
-    version = 3;
-    await setSchemaVersion(db, version);
-  }
+  await createSchema(db);
+  await setSchemaVersion(db, SCHEMA_VERSION);
 }
