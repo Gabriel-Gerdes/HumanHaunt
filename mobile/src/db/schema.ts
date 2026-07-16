@@ -17,35 +17,7 @@ const TABLE_NAMES = [
   'metadata',
 ] as const;
 
-async function getSchemaVersion(db: QuickSQLiteConnection): Promise<number> {
-  try {
-    const result = await db.executeAsync(
-      'SELECT value FROM metadata WHERE key = ?;',
-      ['schema_version'],
-    );
-    const row = (result.rows?._array ?? [])[0] as { value: string } | undefined;
-
-    if (!row) {
-      return 0;
-    }
-
-    const parsed = Number.parseInt(row.value, 10);
-    return Number.isFinite(parsed) ? parsed : 0;
-  } catch {
-    // metadata table may not exist yet on a brand-new database.
-    return 0;
-  }
-}
-
-async function setSchemaVersion(db: QuickSQLiteConnection, version: number) {
-  await db.executeAsync(
-    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?);',
-    ['schema_version', String(version)],
-  );
-}
-
-async function dropAllTables(db: QuickSQLiteConnection) {
-  // Disable FK checks so drop order does not matter.
+export async function dropAllTables(db: QuickSQLiteConnection) {
   await db.executeAsync('PRAGMA foreign_keys = OFF;');
 
   for (const tableName of TABLE_NAMES) {
@@ -138,21 +110,33 @@ export async function createSchema(db: QuickSQLiteConnection) {
   `);
 }
 
-/**
- * Ensures the database matches the current schema.
- * Fresh and outdated databases are built from scratch.
- */
-export async function runMigrations(db: QuickSQLiteConnection) {
-  const version = await getSchemaVersion(db);
+export async function getSchemaVersion(
+  db: QuickSQLiteConnection,
+): Promise<number> {
+  try {
+    const result = await db.executeAsync(
+      'SELECT value FROM metadata WHERE key = ?;',
+      ['schema_version'],
+    );
+    const row = (result.rows?._array ?? [])[0] as { value: string } | undefined;
 
-  if (version === SCHEMA_VERSION) {
-    return;
+    if (!row) {
+      return 0;
+    }
+
+    const parsed = Number.parseInt(row.value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    return 0;
   }
+}
 
-  if (version > 0) {
-    await dropAllTables(db);
-  }
-
-  await createSchema(db);
-  await setSchemaVersion(db, SCHEMA_VERSION);
+export async function setSchemaVersion(
+  db: QuickSQLiteConnection,
+  version: number,
+) {
+  await db.executeAsync(
+    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?);',
+    ['schema_version', String(version)],
+  );
 }

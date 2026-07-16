@@ -1,17 +1,13 @@
 import type { QueryResult, QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-import {
-  createSchema,
-  runMigrations,
-  SCHEMA_VERSION,
-} from '../src/db/migrations';
+import { runMigrations } from '../src/db/migrate';
+import { createSchema, SCHEMA_VERSION } from '../src/db/schema';
 
 type FakeDb = {
   db: QuickSQLiteConnection;
   statements: string[];
   metadata: Map<string, string>;
   tables: Set<string>;
-  setSchemaVersion: (version: number) => void;
 };
 
 function createFakeDb(initialVersion?: number): FakeDb {
@@ -79,10 +75,6 @@ function createFakeDb(initialVersion?: number): FakeDb {
     statements,
     metadata,
     tables,
-    setSchemaVersion(version: number) {
-      metadata.set('schema_version', String(version));
-      tables.add('metadata');
-    },
   };
 }
 

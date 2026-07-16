@@ -2,31 +2,9 @@ import TcpSocket from 'react-native-tcp-socket';
 import type Server from 'react-native-tcp-socket/lib/types/Server';
 import type Socket from 'react-native-tcp-socket/lib/types/Socket';
 
-import type { ClaimEvent, Device } from '../domain/types';
+import type { PeerSyncOptions, SyncMessage } from './messages';
 
 export const DEFAULT_SYNC_PORT = 45678;
-
-type SyncMessage =
-  | {
-      type: 'hello';
-      device: Device;
-    }
-  | {
-      type: 'request_events';
-      deviceId: string;
-    }
-  | {
-      type: 'claim_events';
-      events: ClaimEvent[];
-    };
-
-type PeerSyncOptions = {
-  device: Device;
-  getEvents: () => Promise<ClaimEvent[]>;
-  importEvents: (events: ClaimEvent[]) => Promise<number>;
-  onImportedEvents: () => void;
-  onStatus: (status: string) => void;
-};
 
 export class PeerSyncService {
   private readonly options: PeerSyncOptions;
