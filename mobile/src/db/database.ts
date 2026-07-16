@@ -65,11 +65,17 @@ function mapTeam(row: {
   };
 }
 
-function mapDevice(row: { id: string; name: string; created_at: number }): Device {
+function mapDevice(row: {
+  id: string;
+  name: string;
+  created_at: number;
+  selected_team_id?: string | null;
+}): Device {
   return {
     id: row.id,
     name: row.name,
     createdAt: row.created_at,
+    selectedTeamId: row.selected_team_id ?? undefined,
   };
 }
 
@@ -156,12 +162,18 @@ async function seedDefaultGame(db: QuickSQLiteConnection) {
 
 async function ensureDevice(db: QuickSQLiteConnection) {
   const result = await db.executeAsync(
-    'SELECT id, name, created_at FROM devices ORDER BY created_at LIMIT 1;',
+    `
+    SELECT id, name, created_at, selected_team_id
+    FROM devices
+    ORDER BY created_at
+    LIMIT 1;
+    `,
   );
   const existingDevice = rowsToArray<{
     id: string;
     name: string;
     created_at: number;
+    selected_team_id: string | null;
   }>(result)[0];
 
   if (existingDevice) {
@@ -175,11 +187,29 @@ async function ensureDevice(db: QuickSQLiteConnection) {
   };
 
   await db.executeAsync(
-    'INSERT INTO devices (id, name, created_at) VALUES (?, ?, ?);',
-    [device.id, device.name, device.createdAt],
+    `
+    INSERT INTO devices (id, name, created_at, selected_team_id)
+    VALUES (?, ?, ?, ?);
+    `,
+    [device.id, device.name, device.createdAt, null],
   );
 
   return device;
+}
+
+export async function setSelectedTeam(teamId: string) {
+  const db = getDb();
+  const device = await ensureDevice(db);
+
+  await db.executeAsync(
+    'UPDATE devices SET selected_team_id = ? WHERE id = ?;',
+    [teamId, device.id],
+  );
+
+  return {
+    ...device,
+    selectedTeamId: teamId,
+  };
 }
 
 export async function initializeDatabase() {

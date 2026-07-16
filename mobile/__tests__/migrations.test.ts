@@ -8,11 +8,12 @@ type ColumnInfo = { name: string };
 type FakeDbOptions = {
   initialSchemaVersion?: number;
   initialTaskColumns?: string[];
+  initialDeviceColumns?: string[];
 };
 
 /**
  * Minimal SQLite stand-in for migration unit tests.
- * Tracks schema version, task columns, and seed backfill updates.
+ * Tracks schema version, task/device columns, and seed backfill updates.
  */
 function createFakeDb(options: FakeDbOptions = {}) {
   const metadata = new Map<string, string>();
@@ -27,9 +28,16 @@ function createFakeDb(options: FakeDbOptions = {}) {
     'sort_order',
     'active',
   ];
+  const legacyDeviceColumns = ['id', 'name', 'created_at'];
+
   const tasksTableExists = options.initialTaskColumns !== undefined;
+  const devicesTableExists = options.initialDeviceColumns !== undefined;
+
   const taskColumns = new Set(
     options.initialTaskColumns ?? [...legacyTaskColumns],
+  );
+  const deviceColumns = new Set(
+    options.initialDeviceColumns ?? [...legacyDeviceColumns],
   );
 
   const taskPoints = new Map<
@@ -74,10 +82,32 @@ function createFakeDb(options: FakeDbOptions = {}) {
         } as QueryResult;
       }
 
+      if (normalized.startsWith('PRAGMA table_info(devices)')) {
+        const columns: ColumnInfo[] = [...deviceColumns].map(name => ({
+          name,
+        }));
+        return {
+          rows: {
+            _array: columns,
+            length: columns.length,
+            item: () => undefined,
+          },
+          rowsAffected: 0,
+        } as QueryResult;
+      }
+
       if (normalized.startsWith('ALTER TABLE tasks ADD COLUMN')) {
         const match = normalized.match(/ADD COLUMN (\w+)/i);
         if (match) {
           taskColumns.add(match[1]);
+        }
+        return { rowsAffected: 0 } as QueryResult;
+      }
+
+      if (normalized.startsWith('ALTER TABLE devices ADD COLUMN')) {
+        const match = normalized.match(/ADD COLUMN (\w+)/i);
+        if (match) {
+          deviceColumns.add(match[1]);
         }
         return { rowsAffected: 0 } as QueryResult;
       }
@@ -101,7 +131,7 @@ function createFakeDb(options: FakeDbOptions = {}) {
         return { rowsAffected: 1 } as QueryResult;
       }
 
-      // Simulate IF NOT EXISTS: only apply full v2 columns on first create.
+      // Simulate IF NOT EXISTS: only apply latest columns on first create.
       if (
         normalized.includes('CREATE TABLE IF NOT EXISTS tasks') &&
         !tasksTableExists
@@ -109,6 +139,13 @@ function createFakeDb(options: FakeDbOptions = {}) {
         taskColumns.add('base_points');
         taskColumns.add('current_points');
         taskColumns.add('points_visible');
+      }
+
+      if (
+        normalized.includes('CREATE TABLE IF NOT EXISTS devices') &&
+        !devicesTableExists
+      ) {
+        deviceColumns.add('selected_team_id');
       }
 
       return { rowsAffected: 0 } as QueryResult;
@@ -123,6 +160,7 @@ function createFakeDb(options: FakeDbOptions = {}) {
     getSchemaVersion: () =>
       Number.parseInt(metadata.get('schema_version') ?? '0', 10),
     getTaskColumns: () => [...taskColumns].sort(),
+    getDeviceColumns: () => [...deviceColumns].sort(),
     getTaskPoints: () => taskPoints,
     seedLegacyTask(taskId: string) {
       taskPoints.set(taskId, {
@@ -134,8 +172,8 @@ function createFakeDb(options: FakeDbOptions = {}) {
   };
 }
 
-describe('runMigrations task points', () => {
-  test('fresh database lands on schema v2 with point columns', async () => {
+describe('runMigrations', () => {
+  test('fresh database lands on latest schema with points and selected team', async () => {
     const fake = createFakeDb();
 
     await runMigrations(fake.db);
@@ -148,12 +186,14 @@ describe('runMigrations task points', () => {
         'points_visible',
       ]),
     );
+    expect(fake.getDeviceColumns()).toContain('selected_team_id');
   });
 
-  test('upgrades v1 schema by adding point columns and backfilling seed tasks', async () => {
+  test('upgrades v1 schema through points and selected-team columns', async () => {
     const fake = createFakeDb({
       initialSchemaVersion: 1,
       initialTaskColumns: ['id', 'game_id', 'title', 'sort_order', 'active'],
+      initialDeviceColumns: ['id', 'name', 'created_at'],
     });
 
     for (const task of defaultTasks) {
@@ -162,7 +202,7 @@ describe('runMigrations task points', () => {
 
     await runMigrations(fake.db);
 
-    expect(fake.getSchemaVersion()).toBe(2);
+    expect(fake.getSchemaVersion()).toBe(TARGET_SCHEMA_VERSION);
     expect(fake.getTaskColumns()).toEqual(
       expect.arrayContaining([
         'base_points',
@@ -170,11 +210,16 @@ describe('runMigrations task points', () => {
         'points_visible',
       ]),
     );
+    expect(fake.getDeviceColumns()).toContain('selected_team_id');
 
-    const alterStatements = fake.statements.filter(entry =>
+    const taskAlters = fake.statements.filter(entry =>
       entry.sql.startsWith('ALTER TABLE tasks ADD COLUMN'),
     );
-    expect(alterStatements).toHaveLength(3);
+    const deviceAlters = fake.statements.filter(entry =>
+      entry.sql.startsWith('ALTER TABLE devices ADD COLUMN'),
+    );
+    expect(taskAlters).toHaveLength(3);
+    expect(deviceAlters).toHaveLength(1);
 
     for (const task of defaultTasks) {
       expect(fake.getTaskPoints().get(task.id)).toEqual({
@@ -185,7 +230,7 @@ describe('runMigrations task points', () => {
     }
   });
 
-  test('is a no-op for databases already on schema v2', async () => {
+  test('upgrades v2 schema by adding selected_team_id', async () => {
     const fake = createFakeDb({
       initialSchemaVersion: 2,
       initialTaskColumns: [
@@ -198,11 +243,13 @@ describe('runMigrations task points', () => {
         'current_points',
         'points_visible',
       ],
+      initialDeviceColumns: ['id', 'name', 'created_at'],
     });
 
     await runMigrations(fake.db);
 
-    expect(fake.getSchemaVersion()).toBe(2);
+    expect(fake.getSchemaVersion()).toBe(3);
+    expect(fake.getDeviceColumns()).toContain('selected_team_id');
     expect(
       fake.statements.some(entry =>
         entry.sql.startsWith('ALTER TABLE tasks ADD COLUMN'),
@@ -210,6 +257,30 @@ describe('runMigrations task points', () => {
     ).toBe(false);
     expect(
       fake.statements.some(entry => entry.sql.startsWith('UPDATE tasks')),
+    ).toBe(false);
+  });
+
+  test('is a no-op for databases already on the latest schema', async () => {
+    const fake = createFakeDb({
+      initialSchemaVersion: TARGET_SCHEMA_VERSION,
+      initialTaskColumns: [
+        'id',
+        'game_id',
+        'title',
+        'sort_order',
+        'active',
+        'base_points',
+        'current_points',
+        'points_visible',
+      ],
+      initialDeviceColumns: ['id', 'name', 'created_at', 'selected_team_id'],
+    });
+
+    await runMigrations(fake.db);
+
+    expect(fake.getSchemaVersion()).toBe(TARGET_SCHEMA_VERSION);
+    expect(
+      fake.statements.some(entry => entry.sql.startsWith('ALTER TABLE')),
     ).toBe(false);
   });
 
@@ -226,6 +297,7 @@ describe('runMigrations task points', () => {
         'current_points',
         'points_visible',
       ],
+      initialDeviceColumns: ['id', 'name', 'created_at'],
     });
 
     const customTaskId = defaultTasks[0].id;

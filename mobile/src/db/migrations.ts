@@ -2,7 +2,7 @@ import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
 import { defaultTasks } from '../domain/seed';
 
-export const TARGET_SCHEMA_VERSION = 2;
+export const TARGET_SCHEMA_VERSION = 3;
 
 async function getSchemaVersion(db: QuickSQLiteConnection): Promise<number> {
   const result = await db.executeAsync(
@@ -71,7 +71,8 @@ async function createBaseSchema(db: QuickSQLiteConnection) {
     CREATE TABLE IF NOT EXISTS devices (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      selected_team_id TEXT
     );
   `);
 
@@ -158,12 +159,20 @@ async function migrateToV2(db: QuickSQLiteConnection) {
   }
 }
 
+async function migrateToV3(db: QuickSQLiteConnection) {
+  if (!(await tableHasColumn(db, 'devices', 'selected_team_id'))) {
+    await db.executeAsync(
+      'ALTER TABLE devices ADD COLUMN selected_team_id TEXT;',
+    );
+  }
+}
+
 export async function runMigrations(db: QuickSQLiteConnection) {
   await createBaseSchema(db);
 
   let version = await getSchemaVersion(db);
 
-  // Fresh DB: base schema already includes v2 task columns.
+  // Fresh DB: base schema already includes the latest columns.
   if (version === 0) {
     await setSchemaVersion(db, TARGET_SCHEMA_VERSION);
     return;
@@ -172,6 +181,12 @@ export async function runMigrations(db: QuickSQLiteConnection) {
   if (version < 2) {
     await migrateToV2(db);
     version = 2;
+    await setSchemaVersion(db, version);
+  }
+
+  if (version < 3) {
+    await migrateToV3(db);
+    version = 3;
     await setSchemaVersion(db, version);
   }
 }

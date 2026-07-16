@@ -11,13 +11,16 @@ import {
 
 import { TaskRow } from '../components/TaskRow';
 import { SyncPanel } from '../components/SyncPanel';
+import { TeamPicker } from '../components/TeamPicker';
 import {
   claimTask,
   getClaimEvents,
   getGameState,
   importClaimEvents,
   initializeDatabase,
+  setSelectedTeam,
 } from '../db/database';
+import { resolveSelectedTeam } from '../domain/teamSelection';
 import type { GameState } from '../domain/types';
 import { PeerSyncService } from '../sync/peerSync';
 
@@ -33,6 +36,14 @@ export function ChecklistScreen() {
 
   const claimedCount = useMemo(
     () => gameState?.tasks.filter(task => task.winningClaim).length ?? 0,
+    [gameState],
+  );
+
+  const selectedTeam = useMemo(
+    () =>
+      gameState
+        ? resolveSelectedTeam(gameState.teams, gameState.device.selectedTeamId)
+        : undefined,
     [gameState],
   );
 
@@ -108,9 +119,22 @@ export function ChecklistScreen() {
     }
   }, [loadGame]);
 
+  const handleSelectTeam = useCallback(
+    async (teamId: string) => {
+      await setSelectedTeam(teamId);
+      await loadGame();
+    },
+    [loadGame],
+  );
+
   const handleClaim = useCallback(
-    async (taskId: string, teamId: string) => {
-      const result = await claimTask(taskId, teamId);
+    async (taskId: string) => {
+      if (!selectedTeam) {
+        Alert.alert('Select a team', 'Choose your team before claiming a task.');
+        return;
+      }
+
+      const result = await claimTask(taskId, selectedTeam.id);
       await loadGame();
       await syncServiceRef.current?.broadcastEvents();
 
@@ -121,7 +145,7 @@ export function ChecklistScreen() {
         );
       }
     },
-    [loadGame],
+    [loadGame, selectedTeam],
   );
 
   const handleHostSync = useCallback(() => {
@@ -165,7 +189,16 @@ export function ChecklistScreen() {
           {claimedCount} of {gameState.tasks.length} tasks claimed on this phone.
         </Text>
         <Text style={styles.device}>Device: {gameState.device.id}</Text>
+        {selectedTeam ? (
+          <Text style={styles.playingAs}>Playing as {selectedTeam.name}</Text>
+        ) : null}
       </View>
+
+      <TeamPicker
+        teams={gameState.teams}
+        selectedTeamId={gameState.device.selectedTeamId}
+        onSelectTeam={handleSelectTeam}
+      />
 
       <SyncPanel
         status={syncStatus}
@@ -174,11 +207,20 @@ export function ChecklistScreen() {
         onBroadcast={handleBroadcastClaims}
       />
 
+      {!selectedTeam ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>No team selected</Text>
+          <Text style={styles.emptyBody}>
+            Pick a team above, then claim open tasks for that team.
+          </Text>
+        </View>
+      ) : null}
+
       {gameState.tasks.map(task => (
         <TaskRow
           key={task.id}
           task={task}
-          teams={gameState.teams}
+          selectedTeam={selectedTeam}
           onClaim={handleClaim}
         />
       ))}
@@ -202,6 +244,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 10,
   },
+  emptyBody: {
+    color: '#64748b',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  emptyState: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#f59e0b',
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 14,
+  },
+  emptyTitle: {
+    color: '#92400e',
+    fontSize: 16,
+    fontWeight: '800',
+  },
   eyebrow: {
     color: '#2563eb',
     fontSize: 12,
@@ -221,6 +281,12 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontSize: 16,
     fontWeight: '700',
+  },
+  playingAs: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 8,
   },
   screen: {
     backgroundColor: '#eef2f7',
