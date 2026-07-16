@@ -1,6 +1,8 @@
 import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-const TARGET_SCHEMA_VERSION = 2;
+import { defaultTasks } from '../domain/seed';
+
+export const TARGET_SCHEMA_VERSION = 2;
 
 async function getSchemaVersion(db: QuickSQLiteConnection): Promise<number> {
   const result = await db.executeAsync(
@@ -136,25 +138,22 @@ async function migrateToV2(db: QuickSQLiteConnection) {
   }
 
   // Backfill known seed tasks that were inserted before points existed.
-  const seedPointValues: Array<[string, number]> = [
-    ['task-biff-lime', 10],
-    ['task-tiny-pizza-car', 15],
-    ['task-norfolk-mermaid', 20],
-    ['task-mowhawk', 10],
-    ['task-dog-stroller', 25],
-  ];
-
-  for (const [taskId, points] of seedPointValues) {
+  for (const task of defaultTasks) {
     await db.executeAsync(
       `
       UPDATE tasks
       SET
         base_points = ?,
         current_points = ?,
-        points_visible = 1
+        points_visible = ?
       WHERE id = ? AND base_points = 0 AND current_points = 0;
       `,
-      [points, points, taskId],
+      [
+        task.basePoints,
+        task.currentPoints,
+        task.pointsVisible ? 1 : 0,
+        task.id,
+      ],
     );
   }
 }

@@ -16,10 +16,10 @@ import type {
   Device,
   Game,
   GameState,
-  Task,
   Team,
 } from '../domain/types';
 import { createId } from '../utils/id';
+import { mapTaskRow } from './mappers';
 import { runMigrations } from './migrations';
 
 const DATABASE_NAME = 'humanhaunt.db';
@@ -62,28 +62,6 @@ function mapTeam(row: {
     name: row.name,
     color: row.color,
     sortOrder: row.sort_order,
-  };
-}
-
-function mapTask(row: {
-  id: string;
-  game_id: string;
-  title: string;
-  sort_order: number;
-  active: number;
-  base_points: number;
-  current_points: number;
-  points_visible: number;
-}): Task {
-  return {
-    id: row.id,
-    gameId: row.game_id,
-    title: row.title,
-    sortOrder: row.sort_order,
-    active: row.active === 1,
-    basePoints: row.base_points,
-    currentPoints: row.current_points,
-    pointsVisible: row.points_visible === 1,
   };
 }
 
@@ -263,7 +241,7 @@ export async function getGameState(): Promise<GameState> {
     base_points: number;
     current_points: number;
     points_visible: number;
-  }>(taskResult).map(mapTask);
+  }>(taskResult).map(mapTaskRow);
 
   const claimEvents = await getClaimEvents();
 
