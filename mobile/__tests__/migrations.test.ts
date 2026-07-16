@@ -1,50 +1,35 @@
 import type { QueryResult, QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-import { runMigrations, TARGET_SCHEMA_VERSION } from '../src/db/migrations';
-import { defaultTasks } from '../src/domain/seed';
+import { runMigrations } from '../src/db/migrate';
+import { createSchema, SCHEMA_VERSION } from '../src/db/schema';
 
-type ColumnInfo = { name: string };
-
-type FakeDbOptions = {
-  initialSchemaVersion?: number;
-  initialTaskColumns?: string[];
+type FakeDb = {
+  db: QuickSQLiteConnection;
+  statements: string[];
+  metadata: Map<string, string>;
+  tables: Set<string>;
 };
 
-/**
- * Minimal SQLite stand-in for migration unit tests.
- * Tracks schema version, task columns, and seed backfill updates.
- */
-function createFakeDb(options: FakeDbOptions = {}) {
+function createFakeDb(initialVersion?: number): FakeDb {
   const metadata = new Map<string, string>();
-  if (options.initialSchemaVersion !== undefined) {
-    metadata.set('schema_version', String(options.initialSchemaVersion));
+  const tables = new Set<string>();
+  const statements: string[] = [];
+
+  if (initialVersion !== undefined && initialVersion > 0) {
+    metadata.set('schema_version', String(initialVersion));
+    tables.add('metadata');
   }
-
-  const legacyTaskColumns = [
-    'id',
-    'game_id',
-    'title',
-    'sort_order',
-    'active',
-  ];
-  const tasksTableExists = options.initialTaskColumns !== undefined;
-  const taskColumns = new Set(
-    options.initialTaskColumns ?? [...legacyTaskColumns],
-  );
-
-  const taskPoints = new Map<
-    string,
-    { basePoints: number; currentPoints: number; pointsVisible: number }
-  >();
-
-  const statements: Array<{ sql: string; params?: unknown[] }> = [];
 
   const executeAsync = jest.fn(
     async (sql: string, params?: unknown[]): Promise<QueryResult> => {
       const normalized = sql.replace(/\s+/g, ' ').trim();
-      statements.push({ sql: normalized, params });
+      statements.push(normalized);
 
       if (normalized.startsWith('SELECT value FROM metadata')) {
+        if (!tables.has('metadata')) {
+          throw new Error('no such table: metadata');
+        }
+
         const key = String(params?.[0] ?? '');
         const value = metadata.get(key);
         return {
@@ -62,185 +47,100 @@ function createFakeDb(options: FakeDbOptions = {}) {
         return { rowsAffected: 1 } as QueryResult;
       }
 
-      if (normalized.startsWith('PRAGMA table_info(tasks)')) {
-        const columns: ColumnInfo[] = [...taskColumns].map(name => ({ name }));
-        return {
-          rows: {
-            _array: columns,
-            length: columns.length,
-            item: () => undefined,
-          },
-          rowsAffected: 0,
-        } as QueryResult;
-      }
-
-      if (normalized.startsWith('ALTER TABLE tasks ADD COLUMN')) {
-        const match = normalized.match(/ADD COLUMN (\w+)/i);
+      if (normalized.startsWith('DROP TABLE IF EXISTS')) {
+        const match = normalized.match(/DROP TABLE IF EXISTS (\w+)/i);
         if (match) {
-          taskColumns.add(match[1]);
+          tables.delete(match[1]);
+          if (match[1] === 'metadata') {
+            metadata.clear();
+          }
         }
         return { rowsAffected: 0 } as QueryResult;
       }
 
-      if (normalized.startsWith('UPDATE tasks')) {
-        const [basePoints, currentPoints, pointsVisible, taskId] = params ?? [];
-        const existing = taskPoints.get(String(taskId)) ?? {
-          basePoints: 0,
-          currentPoints: 0,
-          pointsVisible: 1,
-        };
-
-        if (existing.basePoints === 0 && existing.currentPoints === 0) {
-          taskPoints.set(String(taskId), {
-            basePoints: Number(basePoints),
-            currentPoints: Number(currentPoints),
-            pointsVisible: Number(pointsVisible),
-          });
+      if (normalized.startsWith('CREATE TABLE')) {
+        const match = normalized.match(/CREATE TABLE (\w+)/i);
+        if (match) {
+          tables.add(match[1]);
         }
-
-        return { rowsAffected: 1 } as QueryResult;
-      }
-
-      // Simulate IF NOT EXISTS: only apply full v2 columns on first create.
-      if (
-        normalized.includes('CREATE TABLE IF NOT EXISTS tasks') &&
-        !tasksTableExists
-      ) {
-        taskColumns.add('base_points');
-        taskColumns.add('current_points');
-        taskColumns.add('points_visible');
+        return { rowsAffected: 0 } as QueryResult;
       }
 
       return { rowsAffected: 0 } as QueryResult;
     },
   );
 
-  const db = { executeAsync } as unknown as QuickSQLiteConnection;
-
   return {
-    db,
+    db: { executeAsync } as unknown as QuickSQLiteConnection,
     statements,
-    getSchemaVersion: () =>
-      Number.parseInt(metadata.get('schema_version') ?? '0', 10),
-    getTaskColumns: () => [...taskColumns].sort(),
-    getTaskPoints: () => taskPoints,
-    seedLegacyTask(taskId: string) {
-      taskPoints.set(taskId, {
-        basePoints: 0,
-        currentPoints: 0,
-        pointsVisible: 1,
-      });
-    },
+    metadata,
+    tables,
   };
 }
 
-describe('runMigrations task points', () => {
-  test('fresh database lands on schema v2 with point columns', async () => {
+describe('createSchema', () => {
+  test('creates the current tables from scratch', async () => {
+    const fake = createFakeDb();
+
+    await createSchema(fake.db);
+
+    expect(fake.tables.has('tasks')).toBe(true);
+    expect(fake.tables.has('devices')).toBe(true);
+    expect(fake.tables.has('claim_events')).toBe(true);
+
+    const createStatements = fake.statements.filter(sql =>
+      sql.startsWith('CREATE TABLE'),
+    );
+    expect(createStatements.some(sql => sql.includes('base_points'))).toBe(
+      true,
+    );
+    expect(createStatements.some(sql => sql.includes('selected_team_id'))).toBe(
+      true,
+    );
+  });
+});
+
+describe('runMigrations', () => {
+  test('builds a fresh database at the current schema version', async () => {
     const fake = createFakeDb();
 
     await runMigrations(fake.db);
 
-    expect(fake.getSchemaVersion()).toBe(TARGET_SCHEMA_VERSION);
-    expect(fake.getTaskColumns()).toEqual(
-      expect.arrayContaining([
-        'base_points',
-        'current_points',
-        'points_visible',
-      ]),
+    expect(fake.metadata.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    expect(fake.tables.has('tasks')).toBe(true);
+    expect(fake.tables.has('devices')).toBe(true);
+    expect(fake.statements.some(sql => sql.startsWith('DROP TABLE'))).toBe(
+      false,
     );
   });
 
-  test('upgrades v1 schema by adding point columns and backfilling seed tasks', async () => {
-    const fake = createFakeDb({
-      initialSchemaVersion: 1,
-      initialTaskColumns: ['id', 'game_id', 'title', 'sort_order', 'active'],
-    });
-
-    for (const task of defaultTasks) {
-      fake.seedLegacyTask(task.id);
-    }
+  test('rebuilds from scratch when the stored version is outdated', async () => {
+    const fake = createFakeDb(99);
+    fake.tables.add('tasks');
+    fake.tables.add('devices');
 
     await runMigrations(fake.db);
 
-    expect(fake.getSchemaVersion()).toBe(2);
-    expect(fake.getTaskColumns()).toEqual(
-      expect.arrayContaining([
-        'base_points',
-        'current_points',
-        'points_visible',
-      ]),
+    expect(fake.statements.some(sql => sql.startsWith('DROP TABLE'))).toBe(
+      true,
     );
-
-    const alterStatements = fake.statements.filter(entry =>
-      entry.sql.startsWith('ALTER TABLE tasks ADD COLUMN'),
-    );
-    expect(alterStatements).toHaveLength(3);
-
-    for (const task of defaultTasks) {
-      expect(fake.getTaskPoints().get(task.id)).toEqual({
-        basePoints: task.basePoints,
-        currentPoints: task.currentPoints,
-        pointsVisible: task.pointsVisible ? 1 : 0,
-      });
-    }
+    expect(fake.metadata.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    expect(fake.tables.has('tasks')).toBe(true);
+    expect(fake.tables.has('devices')).toBe(true);
   });
 
-  test('is a no-op for databases already on schema v2', async () => {
-    const fake = createFakeDb({
-      initialSchemaVersion: 2,
-      initialTaskColumns: [
-        'id',
-        'game_id',
-        'title',
-        'sort_order',
-        'active',
-        'base_points',
-        'current_points',
-        'points_visible',
-      ],
-    });
+  test('is a no-op when the schema is already current', async () => {
+    const fake = createFakeDb(SCHEMA_VERSION);
+    fake.tables.add('tasks');
 
     await runMigrations(fake.db);
 
-    expect(fake.getSchemaVersion()).toBe(2);
-    expect(
-      fake.statements.some(entry =>
-        entry.sql.startsWith('ALTER TABLE tasks ADD COLUMN'),
-      ),
-    ).toBe(false);
-    expect(
-      fake.statements.some(entry => entry.sql.startsWith('UPDATE tasks')),
-    ).toBe(false);
-  });
-
-  test('does not overwrite non-zero points during backfill', async () => {
-    const fake = createFakeDb({
-      initialSchemaVersion: 1,
-      initialTaskColumns: [
-        'id',
-        'game_id',
-        'title',
-        'sort_order',
-        'active',
-        'base_points',
-        'current_points',
-        'points_visible',
-      ],
-    });
-
-    const customTaskId = defaultTasks[0].id;
-    fake.getTaskPoints().set(customTaskId, {
-      basePoints: 99,
-      currentPoints: 99,
-      pointsVisible: 1,
-    });
-
-    await runMigrations(fake.db);
-
-    expect(fake.getTaskPoints().get(customTaskId)).toEqual({
-      basePoints: 99,
-      currentPoints: 99,
-      pointsVisible: 1,
-    });
+    expect(fake.statements.some(sql => sql.startsWith('CREATE TABLE'))).toBe(
+      false,
+    );
+    expect(fake.statements.some(sql => sql.startsWith('DROP TABLE'))).toBe(
+      false,
+    );
+    expect(fake.metadata.get('schema_version')).toBe(String(SCHEMA_VERSION));
   });
 });

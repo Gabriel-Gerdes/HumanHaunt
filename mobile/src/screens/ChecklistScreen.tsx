@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -9,137 +8,26 @@ import {
   View,
 } from 'react-native';
 
-import { TaskRow } from '../components/TaskRow';
 import { SyncPanel } from '../components/SyncPanel';
-import {
-  claimTask,
-  getClaimEvents,
-  getGameState,
-  importClaimEvents,
-  initializeDatabase,
-} from '../db/database';
-import type { GameState } from '../domain/types';
-import { PeerSyncService } from '../sync/peerSync';
+import { TaskRow } from '../components/TaskRow';
+import { TeamPicker } from '../components/TeamPicker';
+import { useGameSession } from '../hooks/useGameSession';
 
 export function ChecklistScreen() {
-  const [gameState, setGameState] = useState<GameState>();
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState('Peer sync not started');
-  const syncServiceRef = useRef<PeerSyncService | undefined>(undefined);
-  const syncDeviceId = gameState?.device.id;
-  const syncDeviceName = gameState?.device.name;
-  const syncDeviceCreatedAt = gameState?.device.createdAt;
-
-  const claimedCount = useMemo(
-    () => gameState?.tasks.filter(task => task.winningClaim).length ?? 0,
-    [gameState],
-  );
-
-  const loadGame = useCallback(async () => {
-    const state = await getGameState();
-    setGameState(state);
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function bootstrap() {
-      try {
-        await initializeDatabase();
-        const state = await getGameState();
-
-        if (mounted) {
-          setGameState(state);
-        }
-      } catch (error) {
-        Alert.alert('Database error', String(error));
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
-      }
-    }
-
-    bootstrap();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (
-      !syncDeviceId ||
-      !syncDeviceName ||
-      !syncDeviceCreatedAt ||
-      syncServiceRef.current
-    ) {
-      return;
-    }
-
-    const syncService = new PeerSyncService({
-      device: {
-        id: syncDeviceId,
-        name: syncDeviceName,
-        createdAt: syncDeviceCreatedAt,
-      },
-      getEvents: getClaimEvents,
-      importEvents: importClaimEvents,
-      onImportedEvents: loadGame,
-      onStatus: setSyncStatus,
-    });
-
-    syncServiceRef.current = syncService;
-
-    return () => {
-      syncService.stop();
-      syncServiceRef.current = undefined;
-    };
-  }, [loadGame, syncDeviceCreatedAt, syncDeviceId, syncDeviceName]);
-
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-
-    try {
-      await loadGame();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [loadGame]);
-
-  const handleClaim = useCallback(
-    async (taskId: string, teamId: string) => {
-      const result = await claimTask(taskId, teamId);
-      await loadGame();
-      await syncServiceRef.current?.broadcastEvents();
-
-      if (result.status === 'already_claimed') {
-        Alert.alert(
-          'Task already claimed',
-          'Another synced claim already owns this task.',
-        );
-      }
-    },
-    [loadGame],
-  );
-
-  const handleHostSync = useCallback(() => {
-    syncServiceRef.current?.startServer();
-  }, []);
-
-  const handleJoinSync = useCallback(async (host: string) => {
-    try {
-      await syncServiceRef.current?.connectToPeer(host);
-      await loadGame();
-    } catch (error) {
-      Alert.alert('Peer sync failed', String(error));
-    }
-  }, [loadGame]);
-
-  const handleBroadcastClaims = useCallback(async () => {
-    await syncServiceRef.current?.broadcastEvents();
-  }, []);
+  const {
+    gameState,
+    loading,
+    refreshing,
+    syncStatus,
+    claimedCount,
+    selectedTeam,
+    handleRefresh,
+    handleSelectTeam,
+    handleClaim,
+    handleHostSync,
+    handleJoinSync,
+    handleBroadcastClaims,
+  } = useGameSession();
 
   if (loading || !gameState) {
     return (
@@ -165,7 +53,16 @@ export function ChecklistScreen() {
           {claimedCount} of {gameState.tasks.length} tasks claimed on this phone.
         </Text>
         <Text style={styles.device}>Device: {gameState.device.id}</Text>
+        {selectedTeam ? (
+          <Text style={styles.playingAs}>Playing as {selectedTeam.name}</Text>
+        ) : null}
       </View>
+
+      <TeamPicker
+        teams={gameState.teams}
+        selectedTeamId={gameState.device.selectedTeamId}
+        onSelectTeam={handleSelectTeam}
+      />
 
       <SyncPanel
         status={syncStatus}
@@ -174,11 +71,20 @@ export function ChecklistScreen() {
         onBroadcast={handleBroadcastClaims}
       />
 
+      {!selectedTeam ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>No team selected</Text>
+          <Text style={styles.emptyBody}>
+            Pick a team above, then claim open tasks for that team.
+          </Text>
+        </View>
+      ) : null}
+
       {gameState.tasks.map(task => (
         <TaskRow
           key={task.id}
           task={task}
-          teams={gameState.teams}
+          selectedTeam={selectedTeam}
           onClaim={handleClaim}
         />
       ))}
@@ -202,6 +108,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 10,
   },
+  emptyBody: {
+    color: '#64748b',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  emptyState: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#f59e0b',
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 14,
+  },
+  emptyTitle: {
+    color: '#92400e',
+    fontSize: 16,
+    fontWeight: '800',
+  },
   eyebrow: {
     color: '#2563eb',
     fontSize: 12,
@@ -221,6 +145,12 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontSize: 16,
     fontWeight: '700',
+  },
+  playingAs: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 8,
   },
   screen: {
     backgroundColor: '#eef2f7',
