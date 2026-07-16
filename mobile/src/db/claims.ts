@@ -1,6 +1,6 @@
 import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-import { getWinningClaim } from '../domain/claimResolution';
+import { getClaimsForTask, getWinningClaim } from '../domain/claimResolution';
 import { DEFAULT_GAME_ID } from '../domain/seed';
 import type { ClaimEvent } from '../domain/types';
 import { createId } from '../utils/id';
@@ -59,9 +59,7 @@ export async function claimTask(taskId: string, teamId: string) {
   const db = getDb();
   const device = await ensureDevice(db);
   const allClaims = await getClaimEvents();
-  const winningClaim = getWinningClaim(
-    allClaims.filter(event => event.taskId === taskId),
-  );
+  const winningClaim = getWinningClaim(getClaimsForTask(allClaims, taskId));
 
   if (winningClaim) {
     return {
