@@ -1,6 +1,7 @@
 import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
 import {
+  defaultCategories,
   defaultGame,
   defaultTasks,
   defaultTeams,
@@ -36,12 +37,39 @@ export async function seedDefaultGame(db: QuickSQLiteConnection) {
     );
   }
 
+  for (const category of defaultCategories) {
+    await db.executeAsync(
+      `
+      INSERT INTO task_categories (
+        id,
+        game_id,
+        name,
+        sort_order,
+        color,
+        active,
+        is_system
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        category.id,
+        category.gameId,
+        category.name,
+        category.sortOrder,
+        category.color,
+        category.active ? 1 : 0,
+        category.isSystem ? 1 : 0,
+      ],
+    );
+  }
+
   for (const task of defaultTasks) {
     await db.executeAsync(
       `
       INSERT INTO tasks (
         id,
         game_id,
+        category_id,
         title,
         sort_order,
         active,
@@ -49,11 +77,12 @@ export async function seedDefaultGame(db: QuickSQLiteConnection) {
         current_points,
         points_visible
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
       [
         task.id,
         task.gameId,
+        task.categoryId,
         task.title,
         task.sortOrder,
         task.active ? 1 : 0,

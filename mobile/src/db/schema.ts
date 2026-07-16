@@ -5,12 +5,13 @@ import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
  * Outdated databases are rebuilt from scratch (acceptable while the app is early).
  * Starts at 4 so installs that recorded legacy incremental versions 1–3 also rebuild.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const TABLE_NAMES = [
   'claim_events',
   'sync_state',
   'tasks',
+  'task_categories',
   'teams',
   'devices',
   'games',
@@ -56,16 +57,31 @@ export async function createSchema(db: QuickSQLiteConnection) {
   `);
 
   await db.executeAsync(`
+    CREATE TABLE task_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      game_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL,
+      color TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      is_system INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (game_id) REFERENCES games(id)
+    );
+  `);
+
+  await db.executeAsync(`
     CREATE TABLE tasks (
       id TEXT PRIMARY KEY NOT NULL,
       game_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
       title TEXT NOT NULL,
       sort_order INTEGER NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
       base_points INTEGER NOT NULL DEFAULT 0,
       current_points INTEGER NOT NULL DEFAULT 0,
       points_visible INTEGER NOT NULL DEFAULT 1,
-      FOREIGN KEY (game_id) REFERENCES games(id)
+      FOREIGN KEY (game_id) REFERENCES games(id),
+      FOREIGN KEY (category_id) REFERENCES task_categories(id)
     );
   `);
 

@@ -7,6 +7,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-a',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-photo',
     title: 'Photo Booth',
     sortOrder: 1,
     active: true,

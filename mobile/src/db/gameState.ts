@@ -8,9 +8,11 @@ import { ensureDevice } from './devices';
 import { runMigrations } from './migrate';
 import {
   mapGameRow,
+  mapTaskCategoryRow,
   mapTaskRow,
   mapTeamRow,
   type GameRow,
+  type TaskCategoryRow,
   type TaskRow,
   type TeamRow,
 } from './mappers';
@@ -42,11 +44,25 @@ export async function getGameState(): Promise<GameState> {
   );
   const teams = rowsToArray<TeamRow>(teamResult).map(mapTeamRow);
 
+  const categoryResult = await db.executeAsync(
+    `
+    SELECT id, game_id, name, sort_order, color, active, is_system
+    FROM task_categories
+    WHERE game_id = ? AND active = 1
+    ORDER BY sort_order;
+    `,
+    [game.id],
+  );
+  const categories = rowsToArray<TaskCategoryRow>(categoryResult).map(
+    mapTaskCategoryRow,
+  );
+
   const taskResult = await db.executeAsync(
     `
     SELECT
       id,
       game_id,
+      category_id,
       title,
       sort_order,
       active,
@@ -68,6 +84,7 @@ export async function getGameState(): Promise<GameState> {
     game,
     device,
     teams,
+    categories,
     tasks: taskViews,
     claimEvents,
     standings: buildTeamStandings(teams, taskViews),
