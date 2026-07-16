@@ -11,11 +11,13 @@ import { CategoryTabs } from '../components/CategoryTabs';
 import { RankingsPanel } from '../components/RankingsPanel';
 import { SyncPanel } from '../components/SyncPanel';
 import { TaskRow } from '../components/TaskRow';
+import { TaskSearchBar } from '../components/TaskSearchBar';
 import { TeamPicker } from '../components/TeamPicker';
 import {
   groupTasksByCategory,
   tasksForCategory,
 } from '../domain/categories';
+import { filterTasksByTitleQuery } from '../domain/taskSearch';
 import { useGameSession } from '../hooks/useGameSession';
 import { styles } from './ChecklistScreen.styles';
 
@@ -35,6 +37,7 @@ export function ChecklistScreen() {
     handleBroadcastClaims,
   } = useGameSession();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>();
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     if (!gameState?.categories.length) {
@@ -70,12 +73,14 @@ export function ChecklistScreen() {
       return [];
     }
 
-    return tasksForCategory(
+    const categoryTasks = tasksForCategory(
       gameState.categories,
       gameState.tasks,
       selectedCategoryId,
     );
-  }, [gameState, selectedCategoryId]);
+
+    return filterTasksByTitleQuery(categoryTasks, searchQuery);
+  }, [gameState, searchQuery, selectedCategoryId]);
 
   if (loading || !gameState || !selectedCategoryId) {
     return (
@@ -86,6 +91,10 @@ export function ChecklistScreen() {
     );
   }
 
+  const emptyMessage = searchQuery.trim()
+    ? 'No tasks match your search.'
+    : 'No tasks in this category.';
+
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
@@ -93,7 +102,8 @@ export function ChecklistScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
       }
       style={styles.screen}
-      contentContainerStyle={styles.content}>
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled">
       <View style={styles.hero}>
         <Text style={styles.eyebrow}>Local game</Text>
         <Text style={styles.title}>{gameState.game.name}</Text>
@@ -121,6 +131,8 @@ export function ChecklistScreen() {
         onSelectCategory={setSelectedCategoryId}
       />
 
+      <TaskSearchBar query={searchQuery} onChangeQuery={setSearchQuery} />
+
       <SyncPanel
         status={syncStatus}
         onHost={handleHostSync}
@@ -139,7 +151,7 @@ export function ChecklistScreen() {
 
       {visibleTasks.length === 0 ? (
         <View style={styles.emptyCategory}>
-          <Text style={styles.emptyCategoryText}>No tasks in this category.</Text>
+          <Text style={styles.emptyCategoryText}>{emptyMessage}</Text>
         </View>
       ) : (
         visibleTasks.map(task => (
