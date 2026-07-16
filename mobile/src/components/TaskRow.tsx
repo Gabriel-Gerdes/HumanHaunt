@@ -17,6 +17,9 @@ export function TaskRow({ task, selectedTeam, onClaim }: Props) {
     <View style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.title}>{task.title}</Text>
+        {task.pointsVisible ? (
+          <Text style={styles.points}>{task.currentPoints} pts</Text>
+        ) : null}
         {task.winningTeam ? (
           <Text style={styles.winner}>Claimed by {task.winningTeam.name}</Text>
         ) : (
@@ -119,6 +122,11 @@ const styles = StyleSheet.create({
   },
   open: {
     color: '#047857',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  points: {
+    color: '#475569',
     fontSize: 13,
     fontWeight: '700',
   },

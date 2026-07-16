@@ -1,4 +1,5 @@
 import { buildTaskViews } from '../domain/claimResolution';
+import { buildTeamStandings } from '../domain/rankings';
 import { DEFAULT_GAME_ID } from '../domain/seed';
 import type { GameState } from '../domain/types';
 import { getClaimEvents } from './claims';
@@ -61,12 +62,14 @@ export async function getGameState(): Promise<GameState> {
   const tasks = rowsToArray<TaskRow>(taskResult).map(mapTaskRow);
 
   const claimEvents = await getClaimEvents();
+  const taskViews = buildTaskViews(tasks, teams, claimEvents);
 
   return {
     game,
     device,
     teams,
-    tasks: buildTaskViews(tasks, teams, claimEvents),
+    tasks: taskViews,
     claimEvents,
+    standings: buildTeamStandings(teams, taskViews),
   };
 }

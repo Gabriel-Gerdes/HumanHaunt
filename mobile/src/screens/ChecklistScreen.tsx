@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import { SyncPanel } from '../components/SyncPanel';
+import { RankingsPanel } from '../components/RankingsPanel';
 import { TaskRow } from '../components/TaskRow';
 import { TeamPicker } from '../components/TeamPicker';
 import { useGameSession } from '../hooks/useGameSession';
@@ -63,6 +64,8 @@ export function ChecklistScreen() {
         selectedTeamId={gameState.device.selectedTeamId}
         onSelectTeam={handleSelectTeam}
       />
+
+      <RankingsPanel standings={gameState.standings} />
 
       <SyncPanel
         status={syncStatus}
