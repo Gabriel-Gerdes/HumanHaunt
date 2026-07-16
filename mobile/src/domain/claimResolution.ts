@@ -1,5 +1,14 @@
 import type { ClaimEvent, Task, TaskWithWinner, Team } from './types';
 
+/**
+ * First-claim-wins lockout rules:
+ * 1. Duplicate event IDs are ignored (first occurrence kept).
+ * 2. The winning claim is the earliest by `claimedAt`.
+ * 3. If `claimedAt` ties, the lexicographically smaller event `id` wins.
+ *
+ * Conflicting claims can all remain in the append-only log. Only the derived
+ * winner is used for task lockout / scoring.
+ */
 export function compareClaimEvents(left: ClaimEvent, right: ClaimEvent) {
   if (left.claimedAt !== right.claimedAt) {
     return left.claimedAt - right.claimedAt;
@@ -8,12 +17,31 @@ export function compareClaimEvents(left: ClaimEvent, right: ClaimEvent) {
   return left.id.localeCompare(right.id);
 }
 
+/** Keeps the first occurrence of each claim event id. */
+export function dedupeClaimEventsById(events: ClaimEvent[]): ClaimEvent[] {
+  const byId = new Map<string, ClaimEvent>();
+
+  for (const event of events) {
+    if (!byId.has(event.id)) {
+      byId.set(event.id, event);
+    }
+  }
+
+  return [...byId.values()];
+}
+
+export function getClaimsForTask(events: ClaimEvent[], taskId: string) {
+  return dedupeClaimEventsById(events.filter(event => event.taskId === taskId));
+}
+
 export function getWinningClaim(events: ClaimEvent[]) {
-  if (events.length === 0) {
+  const uniqueEvents = dedupeClaimEventsById(events);
+
+  if (uniqueEvents.length === 0) {
     return undefined;
   }
 
-  return [...events].sort(compareClaimEvents)[0];
+  return [...uniqueEvents].sort(compareClaimEvents)[0];
 }
 
 export function buildTaskViews(
@@ -24,7 +52,7 @@ export function buildTaskViews(
   const teamById = new Map(teams.map(team => [team.id, team]));
 
   return tasks.map(task => {
-    const taskClaims = claimEvents.filter(event => event.taskId === task.id);
+    const taskClaims = getClaimsForTask(claimEvents, task.id);
     const winningClaim = getWinningClaim(taskClaims);
 
     return {
