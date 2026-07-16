@@ -16,10 +16,10 @@ import type {
   Device,
   Game,
   GameState,
-  Task,
   Team,
 } from '../domain/types';
 import { createId } from '../utils/id';
+import { mapTaskRow } from './mappers';
 import { runMigrations } from './migrations';
 
 const DATABASE_NAME = 'humanhaunt.db';
@@ -62,22 +62,6 @@ function mapTeam(row: {
     name: row.name,
     color: row.color,
     sortOrder: row.sort_order,
-  };
-}
-
-function mapTask(row: {
-  id: string;
-  game_id: string;
-  title: string;
-  sort_order: number;
-  active: number;
-}): Task {
-  return {
-    id: row.id,
-    gameId: row.game_id,
-    title: row.title,
-    sortOrder: row.sort_order,
-    active: row.active === 1,
   };
 }
 
@@ -144,10 +128,28 @@ async function seedDefaultGame(db: QuickSQLiteConnection) {
   for (const task of defaultTasks) {
     await db.executeAsync(
       `
-      INSERT INTO tasks (id, game_id, title, sort_order, active)
-      VALUES (?, ?, ?, ?, ?);
+      INSERT INTO tasks (
+        id,
+        game_id,
+        title,
+        sort_order,
+        active,
+        base_points,
+        current_points,
+        points_visible
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
       `,
-      [task.id, task.gameId, task.title, task.sortOrder, task.active ? 1 : 0],
+      [
+        task.id,
+        task.gameId,
+        task.title,
+        task.sortOrder,
+        task.active ? 1 : 0,
+        task.basePoints,
+        task.currentPoints,
+        task.pointsVisible ? 1 : 0,
+      ],
     );
   }
 }
@@ -215,7 +217,15 @@ export async function getGameState(): Promise<GameState> {
 
   const taskResult = await db.executeAsync(
     `
-    SELECT id, game_id, title, sort_order, active
+    SELECT
+      id,
+      game_id,
+      title,
+      sort_order,
+      active,
+      base_points,
+      current_points,
+      points_visible
     FROM tasks
     WHERE game_id = ? AND active = 1
     ORDER BY sort_order;
@@ -228,7 +238,10 @@ export async function getGameState(): Promise<GameState> {
     title: string;
     sort_order: number;
     active: number;
-  }>(taskResult).map(mapTask);
+    base_points: number;
+    current_points: number;
+    points_visible: number;
+  }>(taskResult).map(mapTaskRow);
 
   const claimEvents = await getClaimEvents();
 

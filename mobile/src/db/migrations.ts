@@ -1,8 +1,32 @@
 import type { QuickSQLiteConnection } from 'react-native-quick-sqlite';
 
-const SCHEMA_VERSION = '1';
+import { defaultTasks } from '../domain/seed';
 
-export async function runMigrations(db: QuickSQLiteConnection) {
+export const TARGET_SCHEMA_VERSION = 2;
+
+async function getSchemaVersion(db: QuickSQLiteConnection): Promise<number> {
+  const result = await db.executeAsync(
+    'SELECT value FROM metadata WHERE key = ?;',
+    ['schema_version'],
+  );
+  const row = (result.rows?._array ?? [])[0] as { value: string } | undefined;
+
+  if (!row) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(row.value, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function setSchemaVersion(db: QuickSQLiteConnection, version: number) {
+  await db.executeAsync(
+    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?);',
+    ['schema_version', String(version)],
+  );
+}
+
+async function createBaseSchema(db: QuickSQLiteConnection) {
   await db.executeAsync(`
     CREATE TABLE IF NOT EXISTS metadata (
       key TEXT PRIMARY KEY NOT NULL,
@@ -36,6 +60,9 @@ export async function runMigrations(db: QuickSQLiteConnection) {
       title TEXT NOT NULL,
       sort_order INTEGER NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
+      base_points INTEGER NOT NULL DEFAULT 0,
+      current_points INTEGER NOT NULL DEFAULT 0,
+      points_visible INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (game_id) REFERENCES games(id)
     );
   `);
@@ -78,9 +105,73 @@ export async function runMigrations(db: QuickSQLiteConnection) {
     CREATE INDEX IF NOT EXISTS idx_claim_events_task_id
     ON claim_events(task_id);
   `);
+}
 
-  await db.executeAsync(
-    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?);',
-    ['schema_version', SCHEMA_VERSION],
-  );
+async function tableHasColumn(
+  db: QuickSQLiteConnection,
+  tableName: string,
+  columnName: string,
+) {
+  const result = await db.executeAsync(`PRAGMA table_info(${tableName});`);
+  const columns = (result.rows?._array ?? []) as Array<{ name: string }>;
+  return columns.some(column => column.name === columnName);
+}
+
+async function migrateToV2(db: QuickSQLiteConnection) {
+  // Older installs created `tasks` without points columns.
+  if (!(await tableHasColumn(db, 'tasks', 'base_points'))) {
+    await db.executeAsync(
+      'ALTER TABLE tasks ADD COLUMN base_points INTEGER NOT NULL DEFAULT 0;',
+    );
+  }
+
+  if (!(await tableHasColumn(db, 'tasks', 'current_points'))) {
+    await db.executeAsync(
+      'ALTER TABLE tasks ADD COLUMN current_points INTEGER NOT NULL DEFAULT 0;',
+    );
+  }
+
+  if (!(await tableHasColumn(db, 'tasks', 'points_visible'))) {
+    await db.executeAsync(
+      'ALTER TABLE tasks ADD COLUMN points_visible INTEGER NOT NULL DEFAULT 1;',
+    );
+  }
+
+  // Backfill known seed tasks that were inserted before points existed.
+  for (const task of defaultTasks) {
+    await db.executeAsync(
+      `
+      UPDATE tasks
+      SET
+        base_points = ?,
+        current_points = ?,
+        points_visible = ?
+      WHERE id = ? AND base_points = 0 AND current_points = 0;
+      `,
+      [
+        task.basePoints,
+        task.currentPoints,
+        task.pointsVisible ? 1 : 0,
+        task.id,
+      ],
+    );
+  }
+}
+
+export async function runMigrations(db: QuickSQLiteConnection) {
+  await createBaseSchema(db);
+
+  let version = await getSchemaVersion(db);
+
+  // Fresh DB: base schema already includes v2 task columns.
+  if (version === 0) {
+    await setSchemaVersion(db, TARGET_SCHEMA_VERSION);
+    return;
+  }
+
+  if (version < 2) {
+    await migrateToV2(db);
+    version = 2;
+    await setSchemaVersion(db, version);
+  }
 }
