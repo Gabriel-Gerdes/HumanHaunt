@@ -7,6 +7,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-a',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-photo',
     title: 'Photo Booth',
     sortOrder: 1,
     active: true,
@@ -73,6 +74,7 @@ describe('mapTaskRow', () => {
     const mapped = mapTaskRow({
       id: 'task-a',
       game_id: DEFAULT_GAME_ID,
+      category_id: 'category-photo',
       title: 'Photo Booth',
       sort_order: 3,
       active: 1,
@@ -84,6 +86,7 @@ describe('mapTaskRow', () => {
     expect(mapped).toEqual({
       id: 'task-a',
       gameId: DEFAULT_GAME_ID,
+      categoryId: 'category-photo',
       title: 'Photo Booth',
       sortOrder: 3,
       active: true,
@@ -97,6 +100,7 @@ describe('mapTaskRow', () => {
     const mapped = mapTaskRow({
       id: 'task-b',
       game_id: DEFAULT_GAME_ID,
+      category_id: 'category-photo',
       title: 'Hidden Task',
       sort_order: 1,
       active: 0,

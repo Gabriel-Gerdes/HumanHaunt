@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -8,10 +8,15 @@ import {
   View,
 } from 'react-native';
 
-import { SyncPanel } from '../components/SyncPanel';
+import { CategoryTabs } from '../components/CategoryTabs';
 import { RankingsPanel } from '../components/RankingsPanel';
+import { SyncPanel } from '../components/SyncPanel';
 import { TaskRow } from '../components/TaskRow';
 import { TeamPicker } from '../components/TeamPicker';
+import {
+  groupTasksByCategory,
+  tasksForCategory,
+} from '../domain/categories';
 import { useGameSession } from '../hooks/useGameSession';
 
 export function ChecklistScreen() {
@@ -29,8 +34,50 @@ export function ChecklistScreen() {
     handleJoinSync,
     handleBroadcastClaims,
   } = useGameSession();
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>();
 
-  if (loading || !gameState) {
+  useEffect(() => {
+    if (!gameState?.categories.length) {
+      return;
+    }
+
+    const stillValid = gameState.categories.some(
+      category => category.id === selectedCategoryId,
+    );
+    if (!stillValid) {
+      setSelectedCategoryId(gameState.categories[0].id);
+    }
+  }, [gameState?.categories, selectedCategoryId]);
+
+  const categorySections = useMemo(
+    () =>
+      gameState
+        ? groupTasksByCategory(gameState.categories, gameState.tasks)
+        : [],
+    [gameState],
+  );
+
+  const taskCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const section of categorySections) {
+      counts[section.category.id] = section.tasks.length;
+    }
+    return counts;
+  }, [categorySections]);
+
+  const visibleTasks = useMemo(() => {
+    if (!gameState || !selectedCategoryId) {
+      return [];
+    }
+
+    return tasksForCategory(
+      gameState.categories,
+      gameState.tasks,
+      selectedCategoryId,
+    );
+  }, [gameState, selectedCategoryId]);
+
+  if (loading || !gameState || !selectedCategoryId) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" />
@@ -67,6 +114,13 @@ export function ChecklistScreen() {
 
       <RankingsPanel standings={gameState.standings} />
 
+      <CategoryTabs
+        categories={gameState.categories}
+        selectedCategoryId={selectedCategoryId}
+        taskCounts={taskCounts}
+        onSelectCategory={setSelectedCategoryId}
+      />
+
       <SyncPanel
         status={syncStatus}
         onHost={handleHostSync}
@@ -83,14 +137,20 @@ export function ChecklistScreen() {
         </View>
       ) : null}
 
-      {gameState.tasks.map(task => (
-        <TaskRow
-          key={task.id}
-          task={task}
-          selectedTeam={selectedTeam}
-          onClaim={handleClaim}
-        />
-      ))}
+      {visibleTasks.length === 0 ? (
+        <View style={styles.emptyCategory}>
+          <Text style={styles.emptyCategoryText}>No tasks in this category.</Text>
+        </View>
+      ) : (
+        visibleTasks.map(task => (
+          <TaskRow
+            key={task.id}
+            task={task}
+            selectedTeam={selectedTeam}
+            onClaim={handleClaim}
+          />
+        ))
+      )}
     </ScrollView>
   );
 }
@@ -115,6 +175,19 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 14,
     marginTop: 4,
+  },
+  emptyCategory: {
+    backgroundColor: '#ffffff',
+    borderColor: '#d7dde8',
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 14,
+  },
+  emptyCategoryText: {
+    color: '#64748b',
+    fontSize: 14,
+    fontWeight: '600',
   },
   emptyState: {
     backgroundColor: '#fffbeb',

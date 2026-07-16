@@ -12,9 +12,21 @@ export type Team = {
   sortOrder: number;
 };
 
+export type TaskCategory = {
+  id: string;
+  gameId: string;
+  name: string;
+  sortOrder: number;
+  color: string;
+  active: boolean;
+  /** System categories (e.g. Completed) are not package-editable in v1. */
+  isSystem: boolean;
+};
+
 export type Task = {
   id: string;
   gameId: string;
+  categoryId: string;
   title: string;
   sortOrder: number;
   active: boolean;

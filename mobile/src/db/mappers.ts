@@ -3,6 +3,7 @@ import type {
   Device,
   Game,
   Task,
+  TaskCategory,
   Team,
 } from '../domain/types';
 
@@ -20,9 +21,20 @@ export type TeamRow = {
   sort_order: number;
 };
 
+export type TaskCategoryRow = {
+  id: string;
+  game_id: string;
+  name: string;
+  sort_order: number;
+  color: string;
+  active: number;
+  is_system: number;
+};
+
 export type TaskRow = {
   id: string;
   game_id: string;
+  category_id: string;
   title: string;
   sort_order: number;
   active: number;
@@ -68,10 +80,23 @@ export function mapTeamRow(row: TeamRow): Team {
   };
 }
 
+export function mapTaskCategoryRow(row: TaskCategoryRow): TaskCategory {
+  return {
+    id: row.id,
+    gameId: row.game_id,
+    name: row.name,
+    sortOrder: row.sort_order,
+    color: row.color,
+    active: row.active === 1,
+    isSystem: row.is_system === 1,
+  };
+}
+
 export function mapTaskRow(row: TaskRow): Task {
   return {
     id: row.id,
     gameId: row.game_id,
+    categoryId: row.category_id,
     title: row.title,
     sortOrder: row.sort_order,
     active: row.active === 1,

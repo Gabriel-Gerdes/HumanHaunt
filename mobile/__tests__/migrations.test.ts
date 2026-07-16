@@ -85,6 +85,7 @@ describe('createSchema', () => {
     await createSchema(fake.db);
 
     expect(fake.tables.has('tasks')).toBe(true);
+    expect(fake.tables.has('task_categories')).toBe(true);
     expect(fake.tables.has('devices')).toBe(true);
     expect(fake.tables.has('claim_events')).toBe(true);
 
@@ -95,6 +96,9 @@ describe('createSchema', () => {
       true,
     );
     expect(createStatements.some(sql => sql.includes('selected_team_id'))).toBe(
+      true,
+    );
+    expect(createStatements.some(sql => sql.includes('category_id'))).toBe(
       true,
     );
   });

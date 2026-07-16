@@ -14,14 +14,20 @@ export function TaskRow({ task, selectedTeam, onClaim }: Props) {
   const canClaim = Boolean(selectedTeam) && !isClaimed;
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, isClaimed && styles.cardCompleted]}>
       <View style={styles.header}>
-        <Text style={styles.title}>{task.title}</Text>
+        <Text style={[styles.title, isClaimed && styles.textMuted]}>
+          {task.title}
+        </Text>
         {task.pointsVisible ? (
-          <Text style={styles.points}>{task.currentPoints} pts</Text>
+          <Text style={[styles.points, isClaimed && styles.textMuted]}>
+            {task.currentPoints} pts
+          </Text>
         ) : null}
         {task.winningTeam ? (
-          <Text style={styles.winner}>Claimed by {task.winningTeam.name}</Text>
+          <Text style={[styles.winner, isClaimed && styles.textMuted]}>
+            Claimed by {task.winningTeam.name}
+          </Text>
         ) : (
           <Text style={styles.open}>Open</Text>
         )}
@@ -79,6 +85,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     padding: 14,
   },
+  cardCompleted: {
+    backgroundColor: '#f1f5f9',
+    borderColor: '#cbd5e1',
+    opacity: 0.72,
+  },
   claimButton: {
     alignItems: 'center',
     backgroundColor: '#0f172a',
@@ -129,6 +140,9 @@ const styles = StyleSheet.create({
     color: '#475569',
     fontSize: 13,
     fontWeight: '700',
+  },
+  textMuted: {
+    color: '#94a3b8',
   },
   title: {
     color: '#0f172a',

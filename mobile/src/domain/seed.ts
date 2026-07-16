@@ -1,6 +1,7 @@
-import type { Game, Task, Team } from './types';
+import type { Game, Task, TaskCategory, Team } from './types';
 
 export const DEFAULT_GAME_ID = 'human-haunt-2026';
+export const COMPLETED_CATEGORY_ID = 'category-completed';
 
 export const defaultGame: Game = {
   id: DEFAULT_GAME_ID,
@@ -32,10 +33,50 @@ export const defaultTeams: Team[] = [
   },
 ];
 
+export const defaultCategories: TaskCategory[] = [
+  {
+    id: 'category-photo',
+    gameId: DEFAULT_GAME_ID,
+    name: 'Photo',
+    sortOrder: 1,
+    color: '#7c3aed',
+    active: true,
+    isSystem: false,
+  },
+  {
+    id: 'category-location',
+    gameId: DEFAULT_GAME_ID,
+    name: 'Location',
+    sortOrder: 2,
+    color: '#0891b2',
+    active: true,
+    isSystem: false,
+  },
+  {
+    id: 'category-social',
+    gameId: DEFAULT_GAME_ID,
+    name: 'Social',
+    sortOrder: 3,
+    color: '#ea580c',
+    active: true,
+    isSystem: false,
+  },
+  {
+    id: COMPLETED_CATEGORY_ID,
+    gameId: DEFAULT_GAME_ID,
+    name: 'Completed',
+    sortOrder: 100,
+    color: '#64748b',
+    active: true,
+    isSystem: true,
+  },
+];
+
 export const defaultTasks: Task[] = [
   {
     id: 'task-biff-lime',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-social',
     title: 'Someone Biff it on a Lime',
     sortOrder: 1,
     active: true,
@@ -46,6 +87,7 @@ export const defaultTasks: Task[] = [
   {
     id: 'task-tiny-pizza-car',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-location',
     title: 'Tiny Pizza Car',
     sortOrder: 2,
     active: true,
@@ -56,6 +98,7 @@ export const defaultTasks: Task[] = [
   {
     id: 'task-norfolk-mermaid',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-location',
     title: 'Norfolk Mermaid',
     sortOrder: 3,
     active: true,
@@ -66,6 +109,7 @@ export const defaultTasks: Task[] = [
   {
     id: 'task-mowhawk',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-photo',
     title: 'A mowhawk',
     sortOrder: 4,
     active: true,
@@ -76,6 +120,7 @@ export const defaultTasks: Task[] = [
   {
     id: 'task-dog-stroller',
     gameId: DEFAULT_GAME_ID,
+    categoryId: 'category-photo',
     title: 'Dog in stroller',
     sortOrder: 5,
     active: true,
