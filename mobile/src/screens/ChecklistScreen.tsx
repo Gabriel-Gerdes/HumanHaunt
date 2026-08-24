@@ -29,6 +29,7 @@ export function ChecklistScreen() {
     syncStatus,
     claimedCount,
     selectedTeam,
+    error,
     handleRefresh,
     handleSelectTeam,
     handleClaim,
@@ -81,6 +82,26 @@ export function ChecklistScreen() {
 
     return filterTasksByTitleQuery(categoryTasks, searchQuery);
   }, [gameState, searchQuery, selectedCategoryId]);
+
+  if (!loading && !gameState) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyTitle}>Could not load game</Text>
+        <Text style={styles.emptyBody}>
+          {typeof error === 'string' && error
+            ? error
+            : 'Human Haunt data failed to load on this device.'}
+        </Text>
+        <Text
+          style={styles.loadingText}
+          onPress={handleRefresh}
+          accessibilityRole="button"
+          accessibilityLabel="Retry loading the game">
+          Retry
+        </Text>
+      </View>
+    );
+  }
 
   if (loading || !gameState || !selectedCategoryId) {
     return (
