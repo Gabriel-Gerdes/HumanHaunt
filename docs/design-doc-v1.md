@@ -202,7 +202,7 @@ This should become the canonical append-only chain.
 - `received_at`: local ingest timestamp.
 - `user_id`: originating user/node.
 - `payload_json`: typed event-specific payload.
-- `hash`: optional canonical hash of the event body for quick validation. Not required for v1 correctness, but useful when present.
+- `hash`: mandatory lowercase hex SHA-256 digest of the envelope body, computed with the same canonical serialization rules as `adminAuth` (see Hash Verification and Duplicate Divergence). Every import path verifies it; an event whose hash is missing or does not match its body is rejected as tampered, never stored or relayed.
 - `source`: `local`, `peer`, `seed`, or `admin`.
 
 ### `pending_events`
@@ -243,7 +243,7 @@ Optional but useful later for diagnostics.
 
 Cross-table schema constraints (enforced in `mobile/src/db/schema.ts` and covered by `mobile/src/db/migrate.ts` migration tests):
 
-- `events.id` is the primary key; imports use insert-or-ignore semantics keyed on `id`, so duplicate UIDs are silent no-ops rather than errors.
+- `events.id` is the primary key; imports verify the mandatory `hash` first, then use insert-or-ignore semantics keyed on `id`. A duplicate UID whose body reproduces the stored hash is a silent no-op; a duplicate UID whose computed hash differs from the stored row is a divergence: the conflicting copy is rejected, the stored event is never overwritten, and the collision is recorded for host diagnostics (see Hash Verification and Duplicate Divergence).
 - `pending_events.id` mirrors the eventual `events.id`. Promotion moves a row transactionally: insert into `events` and delete from `pending_events` inside one SQLite transaction, so a crash can neither duplicate nor lose the event.
 - `hard_write_blocks.event_ids_json` holds a JSON array of UIDs that must all resolve in `events` at import; blocks containing unresolved UIDs are quarantined and revalidated like events. Block membership is immutable once accepted, and duplicate block IDs are ignored.
 - `event_receipts` keys on the pair (`event_id`, `peer_id`) with upsert semantics that refresh `last_seen_at`.
@@ -308,7 +308,7 @@ Validation rules:
 - `payload.taskId` must reference a known active task at the time the event is applied.
 - `payload.teamId` must reference a known active team.
 - Envelope `gameVersion` must match the current active game version on the device when the claim is created.
-- Duplicate event IDs are ignored.
+- Duplicate event IDs are ignored only when the incoming body verifies against the stored event's mandatory `hash`; a duplicate UID carrying a different body fails verification and is recorded as a divergence instead of silently replacing or coexisting with the stored event (see Hash Verification and Duplicate Divergence).
 - If multiple teams claim the same task, the derived winner is the earliest valid claim ordered by `(logicalSeq, claimedAt, eventId)`, with event ID as the final deterministic tie-breaker.
 - `payload.claimedAt` must pass the clock-sanity window check described in Clock Discipline; out-of-window claims are quarantined with failure reason `clock_sanity_failed` instead of being trusted at face value.
 - Locally created claims include `payload.logicalSeq`, the sender's persisted monotonic counter incremented once per locally created event.
@@ -497,7 +497,7 @@ Normative replay contract (exposed to the UI through `mobile/src/hooks/useGameSe
 
 Mesh delivery order is not guaranteed: different paths can deliver a claim before the task-creation or team-creation events it depends on. Rejecting such an event outright would silently destroy valid gameplay data, so validation distinguishes two failure classes:
 
-1. **Structurally malformed** (bad envelope shape, unknown type, missing required fields, failing `adminAuth` tag): rejected immediately, never stored, never relayed.
+1. **Structurally malformed** (bad envelope shape, unknown type, missing required fields, missing or mismatching `hash`, failing `adminAuth` tag): rejected immediately, never stored, never relayed.
 2. **Missing dependencies only** (unknown taskId, unknown teamId, or a `gameVersion` ahead of what this node knows): quarantined in `pending_events`, not applied to game state, and not counted as accepted.
 
 Quarantine behavior:
@@ -507,6 +507,16 @@ Quarantine behavior:
 - Rows expire after a configurable TTL (default: 24 hours) measured from `first_quarantined_at`. Expired rows move to a poison state surfaced in host diagnostics rather than vanishing silently.
 - Central Command can explicitly classify a pending event as poison during host review, discarding it immediately.
 - Promotion replays through the normal deterministic ordering rules, so a late-arriving dependency can legitimately change winners; the Game State Builder rebuild handles this exactly like any other reconciliation.
+
+### Hash Verification and Duplicate Divergence
+
+Event UIDs are minted by originating devices, so a UID alone proves nothing about the body carrying it. Without body verification, a griefer who observes a victim's `event_announcement` could race a forged body under the same UID, and mesh nodes would keep whichever copy arrived first, permanently splitting game state across the mesh. V1 closes this hole by making the envelope `hash` mandatory and verified on every import path:
+
+1. **Canonical digest:** `hash` is a lowercase hex SHA-256 digest over the same canonical serialization defined for `adminAuth` (exactly the fields `createdAt`, `gameId`, `gameVersion`, `id`, `payload`, `type`, `userId`; sorted keys; compact JSON; UTF-8), excluding the `hash` field itself. Locally created events are hashed at creation time.
+2. **Import verification:** every import path (handshake `events` payloads, relayed announcements, seed and start packages, hard-write block contents) recomputes the digest and compares it with the envelope's `hash` field. A missing, malformed, or mismatching digest is a structural rejection: never stored, never relayed, never quarantined.
+3. **Verified dedupe:** insertion stays idempotent by UID, but only after verification. A duplicate UID whose recomputed digest equals the stored row's hash is a silent no-op. A duplicate UID whose digest differs from the stored row is a divergence: the conflicting copy is rejected, the stored event is never overwritten, and the collision is appended to a local divergence log for host diagnostics.
+4. **Handshake divergence scan:** `hello` inventories pair every event UID with a 16-character hash prefix. When a peer announces a UID this node already stores under a different prefix, the node records a divergence entry naming both prefixes, fetches the peer's body into the divergence record (never into `events`), and keeps its own stored event authoritative locally. Divergences surface in host review alongside quarantine poison states; Central Command resolves confirmed divergences with `admin_claim_adjudicated` or a corrective patch-version admin event before the final hard write.
+5. **Residual risk:** hash verification makes divergent duplicates detectable and non-silent, but two disconnected clusters could each hold a different body under one UID until hosts reconcile them. V2 should evolve to content-addressed UIDs (UID equals the digest of the canonical body), which makes forging a rival body under a victim's UID impossible rather than merely detectable.
 
 ### Clock Discipline
 
@@ -679,9 +689,9 @@ sequenceDiagram
   StoreB-->>BuilderB: claim-200 only
   BuilderB-->>B: Photo Booth winner: Team 2
 
-  Note over A,B: Devices reconnect and exchange UID lists first
-  A->>B: hello([claim-100])
-  B->>A: hello([claim-200])
+  Note over A,B: Devices reconnect and exchange inventories (UID plus hash prefix) first
+  A->>B: hello([{id: claim-100, hashPrefix: h100}])
+  B->>A: hello([{id: claim-200, hashPrefix: h200}])
   B->>A: request_events([claim-100])
   A->>B: request_events([claim-200])
   A->>B: events([claim-100])
@@ -720,7 +730,7 @@ Behavior:
 1. Central Command selects a set of already-accepted event UIDs.
 2. Central Command emits an `admin_hard_write` event with a new `blockId` and the covered `eventIds`.
 3. Devices that receive the hard-write event store the block mapping and can announce the block ID in future handshakes instead of every covered UID.
-4. When a peer is missing a hard-write block, it requests the block contents and runs a full validation/claim check over the contained events at ingestion time, then re-validates any quarantined `pending_events` against the newly imported set.
+4. When a peer is missing a hard-write block, it requests the block contents and runs a full validation/claim check, including mandatory `hash` verification, over the contained events at ingestion time, then re-validates any quarantined `pending_events` against the newly imported set.
 5. After a block is known, handshake UID lists may include the block ID plus any events newer than that block.
 
 Hard writes do not delete history. They create a compact sync alias for a known event set.
@@ -735,9 +745,9 @@ When two nodes connect, they should exchange UID inventories before applying mis
 
 Recommended order:
 
-1. Node A sends `hello` with user/device metadata, game ID, protocol version, known event UIDs, and known hard-write block IDs.
+1. Node A sends `hello` with user/device metadata, game ID, protocol version, known events (each UID paired with a hash prefix), and known hard-write block IDs.
 2. Node B immediately replies with its own `hello` inventory before requesting or importing events.
-3. Each node diffs the peer inventory against its local inventory.
+3. Each node diffs the peer inventory against its local inventory, flagging any shared UID whose hash prefix differs as a duplicate divergence (see Hash Verification and Duplicate Divergence).
 4. Each node sends `request_events` for UIDs/blocks it is missing.
 5. Peers respond with `events` payloads for requested UIDs/blocks.
 6. Both nodes validate and import missing events, update `last_handshake_at`, and rebuild local game state.
@@ -752,8 +762,8 @@ sequenceDiagram
   participant BuilderA as Game State Builder A
   participant BuilderB as Game State Builder B
 
-  A->>B: hello(gameId, protocolVersion, knownEventUids, hardWriteBlockIds)
-  B->>A: hello(gameId, protocolVersion, knownEventUids, hardWriteBlockIds)
+  A->>B: hello(gameId, protocolVersion, knownEvents[id, hashPrefix], hardWriteBlockIds)
+  B->>A: hello(gameId, protocolVersion, knownEvents[id, hashPrefix], hardWriteBlockIds)
   Note over A,B: Both inventories are exchanged before rectifying
   B->>A: request_events(missingFromB)
   A->>B: request_events(missingFromA)
@@ -777,7 +787,7 @@ Relay rules:
 - Peers that already know the UID acknowledge or ignore the announcement.
 - Peers that are missing the UID send `request_events` and import it normally.
 - Never relay events that fail validation. Quarantined pending events are treated as not-yet-valid and are not relayed until they pass re-validation and are promoted into the event log.
-- Insert events idempotently by UID.
+- Verify the mandatory `hash` on every relayed event before insertion, then insert idempotently by UID; reject and log any duplicate UID whose body diverges from the stored event (see Hash Verification and Duplicate Divergence).
 - Limit message size by chunking UID lists, hard-write block contents, and event payloads.
 - Keep transport independent from domain rules so Bluetooth, Wi-Fi Direct, local TCP, or another bearer can be swapped in later.
 
@@ -785,7 +795,7 @@ Relay rules:
 
 Normative starting message set (implemented in `mobile/src/sync/peerSync.ts`). Every message is a JSON object with a required `type` field. Unknown types yield an `error` reply with code `unknown_message_type` without aborting the connection.
 
-- `hello`: `{ type, userId, userName?, gameId, protocolVersion, knownEventUids: string[], hardWriteBlockIds: string[] }`. Sent immediately on connect by BOTH peers; neither side sends `request_events` until both hellos have arrived.
+- `hello`: `{ type, userId, userName?, gameId, protocolVersion, knownEvents: Array<{ id: string, hashPrefix: string }>, hardWriteBlockIds: string[] }` where `hashPrefix` is the first 16 hex characters of the event's mandatory `hash`, letting inventory diffing flag duplicate-UID divergences during handshakes (see Hash Verification and Duplicate Divergence). Sent immediately on connect by BOTH peers; neither side sends `request_events` until both hellos have arrived.
 - `request_events`: `{ type, ids: string[] }` where entries are event UIDs or hard-write block IDs. Responders chunk replies to at most 100 UIDs per `events` message.
 - `events`: `{ type, envelopes: EventEnvelope[], blocks?: Array<{ id, gameId, createdAt, eventIds }> }` carrying full bodies for the requested UIDs/blocks.
 - `event_announcement`: `{ type, ids: string[] }` emitted after importing new valid events or blocks; receivers diff against their inventory and reply with `request_events` for gaps.
@@ -804,7 +814,7 @@ Expected behavior:
 - Nearby phones may not see the claim immediately.
 - When phones connect, they exchange inventories first, then missing events.
 - Each phone rebuilds winners and scores from the same deterministic rules.
-- Once all devices have the same valid event set, they show the same game state.
+- Once all devices have the same valid event set, they show the same game state. Divergent copies under one event UID are detected at import or handshake, rejected, and escalated to host review instead of silently splitting state (see Hash Verification and Duplicate Divergence).
 - Events that arrive before their dependencies are quarantined and applied automatically once those dependencies sync, so out-of-order delivery never loses valid claims.
 
 The UI should communicate sync status clearly, including `last_handshake_at`. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the best-ranked valid claim wins under the `(logicalSeq, claimedAt, eventId)` ordering.
@@ -819,7 +829,7 @@ Admin events are privileged: they can reset claims, end games, and rewrite state
 - The `adminSecret` is generated by Central Command at game creation and distributed to devices only inside the game start package. It is never exchanged over the mesh after setup.
 - Devices MUST reject and MUST NOT store or relay any admin event whose `adminAuth` tag is missing or fails verification. Failed checks are logged locally for host review.
 - Claim events stay unauthenticated in v1; they are low-privilege and conflicts resolve deterministically.
-- Event IDs and optional hashes continue to help detect accidental duplication and surface tampering during host review.
+- Event IDs plus mandatory, import-verified `hash` values detect accidental duplication, reject tampered or forged bodies, and surface duplicate-UID divergences during host review (see Hash Verification and Duplicate Divergence).
 
 Canonical serialization rules (all implementations must match exactly):
 
@@ -871,7 +881,7 @@ flowchart TD
   increment_minor --> emit
   emit --> mesh
 
-  mesh --> verify[Validate Envelope, Optional Hash, Version, adminAuth]
+  mesh --> verify[Validate Envelope, Mandatory Hash, Version, adminAuth]
   verify --> store[(SQLite Append-Only events)]
   store --> builder[Game State Builder]
   builder --> state[Local JSON State for UI]
@@ -905,6 +915,7 @@ flowchart TD
 - Store a local JSON game-state document produced by replaying events.
 - Add a manual rebuild-state action.
 - Add deterministic validation and conflict resolution tests.
+- Enforce mandatory `hash` verification on every import path with duplicate-divergence detection and host diagnostics (see Hash Verification and Duplicate Divergence).
 - Add persisted per-device `logicalSeq` counters and clock-sanity checks on `claimedAt` (see Clock Discipline), including quarantine of out-of-window claims with reason `clock_sanity_failed`.
 - Add the `pending_events` quarantine queue with re-validation on every import, promotion on dependency resolution, TTL expiry, and poison classification.
 
@@ -947,6 +958,7 @@ flowchart TD
 - Clock discipline tests proving backdated `claimedAt` values outside the sanity window are quarantined, `logicalSeq` dominates timestamp manipulation in conflict resolution, Lamport-style counter adoption converges across peers, and `admin_claim_adjudicated` overrides close conflicts deterministically. Include an offline-first regression case: a claim created offline and imported minutes or hours after `claimedAt` is accepted whenever it lies between the referenced task's creation time minus tolerance and the importing node's receive time plus tolerance, and is quarantined only when it violates one of those two bounds.
 - SQLite tests for migrations, idempotent imports, task-description search, and current-state queries.
 - Protocol tests for inventory-first handshake diffing, missing UID requests, hard-write block exchange, duplicate imports, and relay behavior.
+- Hash verification tests proving every import path rejects missing, malformed, or mismatching `hash` values without storing or relaying, identical duplicate UIDs remain silent no-ops, divergent duplicate UIDs are rejected and logged, and `hello` hash-prefix comparison flags divergent duplicates observed during handshakes.
 - Quarantine tests proving out-of-order claims are held in `pending_events`, promoted automatically when their dependency events or hard-write blocks arrive, never relayed while pending, and moved to poison review after TTL expiry.
 - Admin auth tests proving valid `adminAuth` tags are accepted while tampered payloads, wrong secrets, and missing tags are rejected, rejected admin events are never relayed, and rotation overlap windows behave as specified.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
