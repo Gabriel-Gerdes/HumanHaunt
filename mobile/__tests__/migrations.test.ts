@@ -134,6 +134,28 @@ describe('runMigrations', () => {
     expect(fake.tables.has('devices')).toBe(true);
   });
 
+  test('rebuilds and downgrades the version when the stored schema is newer than supported', async () => {
+    // Simulates an app downgrade: the on-disk schema was written by a newer
+    // build. runMigrations must not silently keep potentially incompatible
+    // tables; it rebuilds from scratch and pins the recorded version back to
+    // SCHEMA_VERSION.
+    const fake = createFakeDb(SCHEMA_VERSION + 1);
+    fake.tables.add('tasks');
+    fake.tables.add('devices');
+
+    await runMigrations(fake.db);
+
+    expect(fake.statements.some(sql => sql.startsWith('DROP TABLE'))).toBe(
+      true,
+    );
+    expect(fake.statements.some(sql => sql.startsWith('CREATE TABLE'))).toBe(
+      true,
+    );
+    expect(fake.metadata.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    expect(fake.tables.has('tasks')).toBe(true);
+    expect(fake.tables.has('devices')).toBe(true);
+  });
+
   test('is a no-op when the schema is already current', async () => {
     const fake = createFakeDb(SCHEMA_VERSION);
     fake.tables.add('tasks');
