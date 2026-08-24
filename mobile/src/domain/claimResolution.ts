@@ -3,18 +3,32 @@ import type { ClaimEvent, Task, TaskWithWinner, Team } from './types';
 /**
  * First-claim-wins lockout rules:
  * 1. Duplicate event IDs are ignored (first occurrence kept).
- * 2. The winning claim is the earliest by `claimedAt`.
- * 3. If `claimedAt` ties, the lexicographically smaller event `id` wins.
+ * 2. Winner selection orders candidates ascending by (logicalSeq, claimedAt, eventId):
+ *    lowest logicalSeq wins, then earliest claimedAt, then byte-wise smallest event id.
  *
  * Conflicting claims can all remain in the append-only log. Only the derived
  * winner is used for task lockout / scoring.
  */
 export function compareClaimEvents(left: ClaimEvent, right: ClaimEvent) {
+  if (left.logicalSeq !== right.logicalSeq) {
+    return left.logicalSeq - right.logicalSeq;
+  }
+
   if (left.claimedAt !== right.claimedAt) {
     return left.claimedAt - right.claimedAt;
   }
 
-  return left.id.localeCompare(right.id);
+  // Byte-wise id comparison keeps ordering device-independent;
+  // localeCompare is locale-sensitive and must not be used here.
+  if (left.id < right.id) {
+    return -1;
+  }
+
+  if (left.id > right.id) {
+    return 1;
+  }
+
+  return 0;
 }
 
 /** Keeps the first occurrence of each claim event id. */
