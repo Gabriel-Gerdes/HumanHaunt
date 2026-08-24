@@ -3,13 +3,27 @@ import type { Game, Task, TaskCategory, Team } from './types';
 export const DEFAULT_GAME_ID = 'human-haunt-2026';
 export const COMPLETED_CATEGORY_ID = 'category-completed';
 
-export const defaultGame: Game = {
+/**
+ * Recursively freezes a value (and every nested object/array) so exported
+ * seed data cannot be mutated at runtime.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export const defaultGame: Game = deepFreeze({
   id: DEFAULT_GAME_ID,
   name: 'Human Haunt',
   createdAt: 0,
-};
+});
 
-export const defaultTeams: Team[] = [
+export const defaultTeams: Team[] = deepFreeze([
   {
     id: 'team-1',
     gameId: DEFAULT_GAME_ID,
@@ -31,9 +45,9 @@ export const defaultTeams: Team[] = [
     color: '#16a34a',
     sortOrder: 3,
   },
-];
+]);
 
-export const defaultCategories: TaskCategory[] = [
+export const defaultCategories: TaskCategory[] = deepFreeze([
   {
     id: 'category-photo',
     gameId: DEFAULT_GAME_ID,
@@ -70,9 +84,9 @@ export const defaultCategories: TaskCategory[] = [
     active: true,
     isSystem: true,
   },
-];
+]);
 
-export const defaultTasks: Task[] = [
+export const defaultTasks: Task[] = deepFreeze([
   {
     id: 'task-biff-lime',
     gameId: DEFAULT_GAME_ID,
@@ -128,4 +142,4 @@ export const defaultTasks: Task[] = [
     currentPoints: 25,
     pointsVisible: true,
   },
-];
+]);
