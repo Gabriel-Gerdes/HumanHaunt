@@ -331,13 +331,16 @@
           .withSuccessHandler(state => {
             lastState = state;
             renderState(state);
-            setStatus(`Updated ${new Date(state.updatedAt).toLocaleTimeString()}`);
+            setStatus(state.updatedAt ? `Updated ${new Date(state.updatedAt).toLocaleTimeString()}` : 'Updated');
           })
           .withFailureHandler(showError)
           .getGameState();
       }
 
       function claim(rowNumber) {
+        if (isBusy) {
+          return;
+        }
         if (!selectedTeam) {
           setStatus('Choose your team first.');
           return;
@@ -363,9 +366,12 @@
       }
 
       function resetTask(rowNumber) {
+      function resetTask(rowNumber) {
+        if (isBusy) {
+          return;
+        }
         if (!isAdmin()) {
           setStatus('Select admin first.');
-          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -395,9 +401,11 @@
       }
 
       function editTask(rowNumber) {
+        if (isBusy) {
+          return;
+        }
         if (!isAdmin()) {
           setStatus('Select admin first.');
-          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -436,9 +444,11 @@
       }
 
       function deleteTask(rowNumber) {
+        if (isBusy) {
+          return;
+        }
         if (!isAdmin()) {
           setStatus('Select admin first.');
-          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -468,9 +478,11 @@
       }
 
       function addTask(formData) {
+        if (isBusy) {
+          return;
+        }
         if (!isAdmin()) {
           setStatus('Select admin first.');
-          return;
         }
 
         const taskName = formData.get('taskName');
@@ -497,8 +509,10 @@
       }
 
       function renameTeam(formData) {
+        if (isBusy) {
+          return;
+        }
         if (!isAdmin()) {
-          setStatus('Select admin first.');
           return;
         }
 
@@ -534,12 +548,15 @@
       }
 
       function renderState(state) {
-        validateSelectedTeam(state.teams);
-        renderTeamButtons(state.teams);
-        renderRenameTeamOptions(state.teams);
-        renderScores(state.scores);
+        const teams = Array.isArray(state.teams) ? state.teams : [];
+        const scores = Array.isArray(state.scores) ? state.scores : [];
+        const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+        validateSelectedTeam(teams);
+        renderTeamButtons(teams);
+        renderRenameTeamOptions(teams);
+        renderScores(scores);
         renderAdminPanel();
-        renderTasks(state.tasks);
+        renderTasks(tasks);
       }
 
       function validateSelectedTeam(teams) {
