@@ -197,7 +197,7 @@ This should become the canonical append-only chain.
 - `id`: globally unique event UID.
 - `game_id`
 - `game_version`: version of the game rules/data the event was created against.
-- `type`: `claim_created`, `admin_task_added`, `admin_task_updated`, `admin_task_deleted`, `admin_claim_reset`, `admin_team_renamed`, `admin_game_ended`, `admin_hard_write`, etc.
+- `type`: `claim_created`, `admin_task_added`, `admin_task_updated`, `admin_task_deleted`, `admin_claim_reset`, `admin_team_renamed`, `admin_claim_adjudicated`, `admin_game_ended`, `admin_hard_write`, etc.
 - `created_at`: sender timestamp.
 - `received_at`: local ingest timestamp.
 - `user_id`: originating user/node.
@@ -288,7 +288,8 @@ Example:
   "payload": {
     "taskId": "task-biff-lime",
     "teamId": "team-1",
-    "claimedAt": 1784131200000
+    "claimedAt": 1784131200000,
+    "logicalSeq": 42
   }
 }
 ```
@@ -299,7 +300,9 @@ Validation rules:
 - `payload.teamId` must reference a known active team.
 - Envelope `gameVersion` must match the current active game version on the device when the claim is created.
 - Duplicate event IDs are ignored.
-- If multiple teams claim the same task, the derived winner is the earliest valid claim by `claimedAt`, with event ID as the deterministic tie-breaker.
+- If multiple teams claim the same task, the derived winner is the earliest valid claim ordered by `(logicalSeq, claimedAt, eventId)`, with event ID as the final deterministic tie-breaker.
+- `payload.claimedAt` must pass the clock-sanity window check described in Clock Discipline; out-of-window claims are quarantined with failure reason `clock_sanity_failed` instead of being trusted at face value.
+- Locally created claims include `payload.logicalSeq`, the sender's persisted monotonic counter incremented once per locally created event.
 - Events that fail only because the referenced task or team is not known yet (out-of-order mesh arrival) are quarantined in `pending_events` instead of being dropped, and are re-validated automatically when new events or hard-write blocks are imported (see Validation and Quarantine).
 
 Open decision: what happens when a team is removed after claims exist for that team? Options include keeping historical claims and scores, reassigning, or invalidating those claims. This needs an explicit rule before team-removal admin events ship.
@@ -314,6 +317,7 @@ Payload examples:
 
 - Add task: `{ "taskId": "...", "title": "...", "basePoints": 10, "sortOrder": 12 }`
 - Reset claim: `{ "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
+- Adjudicate claim: `{ "taskId": "...", "winningClaimEventId": "...", "reason": "claims within clock-skew tolerance" }`
 - Rename team: `{ "teamId": "...", "name": "Team Ghost" }`
 - Delete task: `{ "taskId": "..." }`
 - Start phase: `{ "phaseId": "...", "boostUnclaimedBy": 5 }`
@@ -326,6 +330,7 @@ Validation rules:
 - Admin events must include the resulting `gameVersion`.
 - Admin events must carry a valid `adminAuth` HMAC tag (see Security Model). Events with a missing or failing tag are rejected and never stored or relayed.
 - Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
+- `admin_claim_adjudicated` names the authoritative winning claim for a task and overrides the automatic `(logicalSeq, claimedAt, eventId)` ordering for that task when applied (see Clock Discipline and Conflict Handling).
 - Admin event ordering should be deterministic. Prefer `created_at`, then event ID.
 - Admin events whose referenced entities (task, team, phase, category) are not yet known on this node are quarantined like claim events, except that authentication failures (`adminAuth`) are always outright rejections, never quarantine candidates.
 
@@ -477,6 +482,16 @@ Quarantine behavior:
 - Central Command can explicitly classify a pending event as poison during host review, discarding it immediately.
 - Promotion replays through the normal deterministic ordering rules, so a late-arriving dependency can legitimately change winners; the Game State Builder rebuild handles this exactly like any other reconciliation.
 
+### Clock Discipline
+
+Winner selection depends on `claimedAt`, but offline devices run unsynchronized clocks. Without defenses, a skewed or deliberately backdated clock could win every conflict, undermining lockout fairness. V1 therefore layers three mechanisms while keeping the protocol simple:
+
+1. **Sanity window:** A receiving node accepts a claim's `claimedAt` only if it lies within `CLAIM_CLOCK_SKEW_TOLERANCE_MS` (default: 5 minutes) of the node's local receive time, or no more than that tolerance before the referenced task's creation event. Out-of-window claims are quarantined in `pending_events` with failure reason `clock_sanity_failed`, re-checked on every import, and never relayed while pending. This bounds how far any single device can shift its effective claim times relative to the rest of the mesh.
+2. **Logical sequence numbers:** Every device persists a monotonic `logicalSeq` counter in SQLite, incremented once per locally created event and restored on restart. Claim payloads carry `payload.logicalSeq`. Conflict resolution orders candidates by `(logicalSeq, claimedAt, eventId)`: a device cannot mint a lower counter value than it has already emitted, so backdating `claimedAt` alone cannot beat an honest peer whose counter is ahead. On importing peer events, a device adopts `max(localSeq, maxObservedPeerSeq + 1)` before its next local creation, giving Lamport-style convergence without extra handshake traffic.
+3. **Admin adjudication:** When the top two candidate claims for a task fall within the clock-skew tolerance of each other, the automatic ordering is genuinely ambiguous. Central Command can emit an authenticated `admin_claim_adjudicated` event naming the authoritative `winningClaimEventId`; the Game State Builder applies adjudication after normal ordering and overrides the automatic winner for that task. Hosts review close conflicts during the collection window and adjudicate before the final hard write.
+
+Accepted residual risk: a device owner who both resets their logical counter and backdates timestamps can still influence outcomes until hosts adjudicate. The sanity window, persisted counters, and host-visible quarantine records keep this attack bounded and detectable rather than silent.
+
 ### Conflict Handling
 
 Offline devices can create claims before they hear about each other. That is expected.
@@ -485,8 +500,9 @@ When two devices later sync:
 
 1. Both claim events are kept in the append-only event log.
 2. Neither claim is deleted just because a conflict exists.
-3. The Game State Builder chooses one winner with deterministic rules: earliest valid `claimedAt`, then lexicographic event ID.
+3. The Game State Builder chooses one winner with deterministic rules: lowest `logicalSeq`, then earliest valid `claimedAt`, then lexicographic event ID. Only claims that passed the clock-sanity window are eligible, so a backdated timestamp cannot win outright (see Clock Discipline).
 4. Later admin resets can invalidate a specific claim; the builder then chooses the next earliest valid claim or reopens the task.
+5. When the top two candidate claims fall within the clock-skew tolerance of each other, Central Command can resolve the ambiguity with an `admin_claim_adjudicated` event naming the authoritative winner; adjudication overrides the automatic rule for that task.
 
 So the log stores history, and the state document stores the current interpretation of that history.
 
@@ -748,7 +764,7 @@ Expected behavior:
 - Once all devices have the same valid event set, they show the same game state.
 - Events that arrive before their dependencies are quarantined and applied automatically once those dependencies sync, so out-of-order delivery never loses valid claims.
 
-The UI should communicate sync status clearly, including `last_handshake_at`. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the earliest valid claim wins.
+The UI should communicate sync status clearly, including `last_handshake_at`. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the best-ranked valid claim wins under the `(logicalSeq, claimedAt, eventId)` ordering.
 
 ## Security Model
 
@@ -846,6 +862,7 @@ flowchart TD
 - Store a local JSON game-state document produced by replaying events.
 - Add a manual rebuild-state action.
 - Add deterministic validation and conflict resolution tests.
+- Add persisted per-device `logicalSeq` counters and clock-sanity checks on `claimedAt` (see Clock Discipline), including quarantine of out-of-window claims with reason `clock_sanity_failed`.
 - Add the `pending_events` quarantine queue with re-validation on every import, promotion on dependency resolution, TTL expiry, and poison classification.
 
 ### Phase 3: UID-Based Mesh Sync
@@ -860,7 +877,7 @@ flowchart TD
 
 - Define admin event schemas, including game end and hard write.
 - Implement `adminAuth` HMAC tagging on emitted admin events plus verify, reject, and do-not-relay behavior on receiving devices.
-- Implement task add/update/delete, phase start, category update, team rename, and claim reset behavior in the game state builder.
+- Implement task add/update/delete, phase start, category update, team rename, claim reset, and claim adjudication behavior in the game state builder.
 - Add host-facing export/import tooling.
 
 ### Phase 5: Multi-Phase Gameplay
@@ -884,6 +901,7 @@ flowchart TD
 ## Testing Strategy
 
 - Domain unit tests for claim ordering, score totals, rankings, phase rollover, task resets, task admin events, hard-write ingestion, game-end collection windows, and invalid event handling.
+- Clock discipline tests proving backdated `claimedAt` values outside the sanity window are quarantined, `logicalSeq` dominates timestamp manipulation in conflict resolution, Lamport-style counter adoption converges across peers, and `admin_claim_adjudicated` overrides close conflicts deterministically.
 - SQLite tests for migrations, idempotent imports, task-description search, and current-state queries.
 - Protocol tests for inventory-first handshake diffing, missing UID requests, hard-write block exchange, duplicate imports, and relay behavior.
 - Quarantine tests proving out-of-order claims are held in `pending_events`, promoted automatically when their dependency events or hard-write blocks arrive, never relayed while pending, and moved to poison review after TTL expiry.
@@ -896,7 +914,7 @@ flowchart TD
 - What mesh bearer should be used first for the no-signal environment: Bluetooth LE, Wi-Fi Direct, local Wi-Fi TCP, or a hybrid?
 - Should Central Command be a separate app, an admin mode in the React Native app, or a desktop/local web app?
 - How will devices receive the initial game package: QR code, file import, local network, or pre-bundled seed data?
-- Should claim ordering use device timestamps only, or should Central Command/admin review have the final say for close conflicts?
+- What default value should `CLAIM_CLOCK_SKEW_TOLERANCE_MS` use in practice, and should Central Command be able to tune it per match? (Ordering now combines sanity windows, logical sequence numbers, and admin adjudication; see Clock Discipline.)
 - How large can the game get in expected use: task count, player count, team count, and event count?
 - Should phases start at scheduled times, by Central Command action, or both?
 - How much should unclaimed task point values increase between phases?
