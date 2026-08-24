@@ -1,5 +1,13 @@
 import { StyleSheet } from 'react-native';
 
+// Shared card shell for empty-state banners; per-style overrides below supply colors.
+const emptyCardBase = {
+  borderRadius: 16,
+  borderWidth: 1,
+  marginBottom: 12,
+  padding: 14,
+};
+
 export const styles = StyleSheet.create({
   centered: {
     alignItems: 'center',
@@ -22,12 +30,9 @@ export const styles = StyleSheet.create({
     marginTop: 4,
   },
   emptyCategory: {
+    ...emptyCardBase,
     backgroundColor: '#ffffff',
     borderColor: '#d7dde8',
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 12,
-    padding: 14,
   },
   emptyCategoryText: {
     color: '#64748b',
@@ -35,12 +40,9 @@ export const styles = StyleSheet.create({
     fontWeight: '600',
   },
   emptyState: {
+    ...emptyCardBase,
     backgroundColor: '#fffbeb',
     borderColor: '#f59e0b',
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 12,
-    padding: 14,
   },
   emptyTitle: {
     color: '#92400e',
