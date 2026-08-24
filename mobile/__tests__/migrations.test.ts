@@ -36,7 +36,8 @@ function createFakeDb(initialVersion?: number): FakeDb {
           rows: {
             _array: value === undefined ? [] : [{ value }],
             length: value === undefined ? 0 : 1,
-            item: () => undefined,
+            item: (i: number) =>
+              value === undefined || i !== 0 ? undefined : [{ value }][0],
           },
           rowsAffected: 0,
         } as QueryResult;
