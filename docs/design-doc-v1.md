@@ -311,7 +311,9 @@ Validation rules:
 - Duplicate event IDs are ignored only when the incoming body verifies against the stored event's mandatory `hash`; a duplicate UID carrying a different body fails verification and is recorded as a divergence instead of silently replacing or coexisting with the stored event (see Hash Verification and Duplicate Divergence).
 - If multiple teams claim the same task, the derived winner is the earliest valid claim ordered by `(logicalSeq, claimedAt, eventId)`, with event ID as the final deterministic tie-breaker.
 - `payload.claimedAt` must pass the clock-sanity window check described in Clock Discipline; out-of-window claims are quarantined with failure reason `clock_sanity_failed` instead of being trusted at face value.
-- Locally created claims include `payload.logicalSeq`, the sender's persisted monotonic counter incremented once per locally created event.
+- `payload.logicalSeq` is REQUIRED on every claim event regardless of origin (locally created or peer-imported): it must be a non-negative integer carrying the originating device's persisted monotonic counter value at creation time. A claim event whose payload omits `logicalSeq` or carries a non-integer value is structurally malformed and rejected immediately - never stored, relayed, or quarantined.
+- `logicalSeq` must increase monotonically per originating device: each locally created event increments the sender's persisted counter exactly once, and importers adopt `max(localSeq, maxObservedPeerSeq + 1)` before their next local creation so values stay comparable across devices (see Clock Discipline).
+- Conflict resolution depends on this field: winner selection orders competing claims by `(logicalSeq, claimedAt, eventId)` (see Conflict Handling), so `logicalSeq` must be present and strictly increasing across each device's emitted events for ranking to remain deterministic.
 - Events that fail only because the referenced task or team is not known yet (out-of-order mesh arrival) are quarantined in `pending_events` instead of being dropped, and are re-validated automatically when new events or hard-write blocks are imported (see Validation and Quarantine).
 
 Open decision: what happens when a team is removed after claims exist for that team? Options include keeping historical claims and scores, reassigning, or invalidating those claims. This needs an explicit rule before team-removal admin events ship.
@@ -602,7 +604,8 @@ Example event chain:
     "payload": {
       "taskId": "task-photo-booth",
       "teamId": "team-1",
-      "claimedAt": 1784131200000
+      "claimedAt": 1784131200000,
+      "logicalSeq": 101
     }
   },
   {
@@ -616,7 +619,8 @@ Example event chain:
     "payload": {
       "taskId": "task-photo-booth",
       "teamId": "team-2",
-      "claimedAt": 1784131320000
+      "claimedAt": 1784131320000,
+      "logicalSeq": 102
     }
   },
   {
@@ -636,7 +640,7 @@ Example event chain:
 ]
 ```
 
-In this chain, `claim-100` initially wins because it is earlier than `claim-200`. After `admin-002` is applied, `claim-100` is invalidated and the Game State Builder chooses `claim-200` as the current winner. The claim events remain in the chain for audit history.
+In this chain, `claim-100` initially wins because it carries the lower `logicalSeq` (101 versus 102), with its earlier `claimedAt` agreeing under the `(logicalSeq, claimedAt, eventId)` order. After `admin-002` is applied, `claim-100` is invalidated and the Game State Builder chooses `claim-200` as the current winner. The claim events remain in the chain for audit history.
 
 ```mermaid
 flowchart LR
