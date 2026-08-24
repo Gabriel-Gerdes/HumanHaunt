@@ -35,6 +35,7 @@ export const styles = StyleSheet.create({
   },
   claimedBadge: {
     alignItems: 'center',
+    backgroundColor: '#334155',
     borderRadius: 12,
     borderWidth: 1,
     minHeight: 46,
