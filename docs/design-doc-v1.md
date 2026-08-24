@@ -205,6 +205,23 @@ This should become the canonical append-only chain.
 - `hash`: optional canonical hash of the event body for quick validation. Not required for v1 correctness, but useful when present.
 - `source`: `local`, `peer`, `seed`, or `admin`.
 
+### `pending_events`
+
+Quarantine queue for events that are structurally valid but cannot be applied yet because they depend on state this node has not received (see Validation and Quarantine).
+
+- `id`: event UID, identical to the UID used if the event is later promoted into `events`.
+- `game_id`
+- `game_version`
+- `type`
+- `created_at`: sender timestamp from the original envelope.
+- `received_at`: local ingest timestamp.
+- `user_id`: originating user/node.
+- `payload_json`: full original envelope body.
+- `failure_reasons_json`: machine-readable list of failed dependency checks (for example, unknown taskId).
+- `first_quarantined_at`
+- `last_revalidated_at`
+- `expires_at`: quarantine deadline derived from the configurable TTL.
+
 ### `hard_write_blocks`
 
 Compact references issued by Central Command so handshakes can exchange one block ID instead of many old event UIDs.
@@ -283,6 +300,7 @@ Validation rules:
 - Envelope `gameVersion` must match the current active game version on the device when the claim is created.
 - Duplicate event IDs are ignored.
 - If multiple teams claim the same task, the derived winner is the earliest valid claim by `claimedAt`, with event ID as the deterministic tie-breaker.
+- Events that fail only because the referenced task or team is not known yet (out-of-order mesh arrival) are quarantined in `pending_events` instead of being dropped, and are re-validated automatically when new events or hard-write blocks are imported (see Validation and Quarantine).
 
 Open decision: what happens when a team is removed after claims exist for that team? Options include keeping historical claims and scores, reassigning, or invalidating those claims. This needs an explicit rule before team-removal admin events ship.
 
@@ -309,6 +327,7 @@ Validation rules:
 - Admin events must carry a valid `adminAuth` HMAC tag (see Security Model). Events with a missing or failing tag are rejected and never stored or relayed.
 - Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
 - Admin event ordering should be deterministic. Prefer `created_at`, then event ID.
+- Admin events whose referenced entities (task, team, phase, category) are not yet known on this node are quarantined like claim events, except that authentication failures (`adminAuth`) are always outright rejections, never quarantine candidates.
 
 ### Game Start Package
 
@@ -443,6 +462,21 @@ Practical rules:
 - Incremental/vector-style updates are optional later optimizations. If incremental apply is used, every applied action still needs a well-defined way to recompute equivalent state from a full replay; full rebuild remains the source of truth.
 - The initial start package is a block of creation events that the builder applies like any other events.
 
+### Validation and Quarantine
+
+Mesh delivery order is not guaranteed: different paths can deliver a claim before the task-creation or team-creation events it depends on. Rejecting such an event outright would silently destroy valid gameplay data, so validation distinguishes two failure classes:
+
+1. **Structurally malformed** (bad envelope shape, unknown type, missing required fields, failing `adminAuth` tag): rejected immediately, never stored, never relayed.
+2. **Missing dependencies only** (unknown taskId, unknown teamId, or a `gameVersion` ahead of what this node knows): quarantined in `pending_events`, not applied to game state, and not counted as accepted.
+
+Quarantine behavior:
+
+- Every time a new event or hard-write block is imported, all `pending_events` rows are re-validated. Events whose dependencies now resolve are promoted into the append-only `events` log, announced to peers like any other newly imported event, and removed from the queue.
+- Quarantined events are NOT relayed while pending. They propagate only after promotion, which keeps unvalidated data from amplifying across the mesh.
+- Rows expire after a configurable TTL (default: 24 hours) measured from `first_quarantined_at`. Expired rows move to a poison state surfaced in host diagnostics rather than vanishing silently.
+- Central Command can explicitly classify a pending event as poison during host review, discarding it immediately.
+- Promotion replays through the normal deterministic ordering rules, so a late-arriving dependency can legitimately change winners; the Game State Builder rebuild handles this exactly like any other reconciliation.
+
 ### Conflict Handling
 
 Offline devices can create claims before they hear about each other. That is expected.
@@ -550,8 +584,12 @@ flowchart LR
 
   claim_rules -->|valid| event_log[(SQLite Append-Only events)]
   admin_rules -->|valid| event_log
-  claim_rules -->|invalid| reject[Reject and Do Not Relay]
-  admin_rules -->|invalid| reject
+  claim_rules -->|missing dependency| quarantine[(Pending Events Queue)]
+  admin_rules -->|missing dependency| quarantine
+  claim_rules -->|malformed| reject[Reject - Never Stored or Relayed]
+  admin_rules -->|malformed| reject
+  quarantine -->|dependency arrives - revalidate and promote| event_log
+  quarantine -->|TTL expired or poison| discard[Discard After Host Review]
 
   event_log --> builder[Game State Builder]
   builder --> state_doc[Local JSON Game State]
@@ -625,7 +663,7 @@ Behavior:
 1. Central Command selects a set of already-accepted event UIDs.
 2. Central Command emits an `admin_hard_write` event with a new `blockId` and the covered `eventIds`.
 3. Devices that receive the hard-write event store the block mapping and can announce the block ID in future handshakes instead of every covered UID.
-4. When a peer is missing a hard-write block, it requests the block contents and runs a full validation/claim check over the contained events at ingestion time.
+4. When a peer is missing a hard-write block, it requests the block contents and runs a full validation/claim check over the contained events at ingestion time, then re-validates any quarantined `pending_events` against the newly imported set.
 5. After a block is known, handshake UID lists may include the block ID plus any events newer than that block.
 
 Hard writes do not delete history. They create a compact sync alias for a known event set.
@@ -681,7 +719,7 @@ Relay rules:
 - After a node imports a valid new event or hard-write block, it announces that UID/block to its other connected peers.
 - Peers that already know the UID acknowledge or ignore the announcement.
 - Peers that are missing the UID send `request_events` and import it normally.
-- Never relay events that fail validation.
+- Never relay events that fail validation. Quarantined pending events are treated as not-yet-valid and are not relayed until they pass re-validation and are promoted into the event log.
 - Insert events idempotently by UID.
 - Limit message size by chunking UID lists, hard-write block contents, and event payloads.
 - Keep transport independent from domain rules so Bluetooth, Wi-Fi Direct, local TCP, or another bearer can be swapped in later.
@@ -708,6 +746,7 @@ Expected behavior:
 - When phones connect, they exchange inventories first, then missing events.
 - Each phone rebuilds winners and scores from the same deterministic rules.
 - Once all devices have the same valid event set, they show the same game state.
+- Events that arrive before their dependencies are quarantined and applied automatically once those dependencies sync, so out-of-order delivery never loses valid claims.
 
 The UI should communicate sync status clearly, including `last_handshake_at`. A task can show that a local claim is pending mesh propagation, and conflict notices can explain when multiple claims exist but only the earliest valid claim wins.
 
@@ -807,6 +846,7 @@ flowchart TD
 - Store a local JSON game-state document produced by replaying events.
 - Add a manual rebuild-state action.
 - Add deterministic validation and conflict resolution tests.
+- Add the `pending_events` quarantine queue with re-validation on every import, promotion on dependency resolution, TTL expiry, and poison classification.
 
 ### Phase 3: UID-Based Mesh Sync
 
@@ -846,6 +886,7 @@ flowchart TD
 - Domain unit tests for claim ordering, score totals, rankings, phase rollover, task resets, task admin events, hard-write ingestion, game-end collection windows, and invalid event handling.
 - SQLite tests for migrations, idempotent imports, task-description search, and current-state queries.
 - Protocol tests for inventory-first handshake diffing, missing UID requests, hard-write block exchange, duplicate imports, and relay behavior.
+- Quarantine tests proving out-of-order claims are held in `pending_events`, promoted automatically when their dependency events or hard-write blocks arrive, never relayed while pending, and moved to poison review after TTL expiry.
 - Admin auth tests proving valid `adminAuth` tags are accepted while tampered payloads, wrong secrets, and missing tags are rejected, rejected admin events are never relayed, and rotation overlap windows behave as specified.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
 - State rebuild tests proving full replay matches the UI state document after conflicts and admin resets.
