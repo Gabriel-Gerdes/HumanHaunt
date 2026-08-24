@@ -241,6 +241,15 @@ Optional but useful later for diagnostics.
 - `first_seen_at`
 - `last_seen_at`
 
+Cross-table schema constraints (enforced in `mobile/src/db/schema.ts` and covered by `mobile/src/db/migrate.ts` migration tests):
+
+- `events.id` is the primary key; imports use insert-or-ignore semantics keyed on `id`, so duplicate UIDs are silent no-ops rather than errors.
+- `pending_events.id` mirrors the eventual `events.id`. Promotion moves a row transactionally: insert into `events` and delete from `pending_events` inside one SQLite transaction, so a crash can neither duplicate nor lose the event.
+- `hard_write_blocks.event_ids_json` holds a JSON array of UIDs that must all resolve in `events` at import; blocks containing unresolved UIDs are quarantined and revalidated like events. Block membership is immutable once accepted, and duplicate block IDs are ignored.
+- `event_receipts` keys on the pair (`event_id`, `peer_id`) with upsert semantics that refresh `last_seen_at`.
+- `sync_state.peer_id` is the primary key; handshake completion updates `last_handshake_at` and `last_event_count` in the same transaction that records newly imported events.
+- Migrations are versioned and append-only; each runs in a transaction and must leave every pre-existing row readable so a mid-event app upgrade never strands a device's event chain.
+
 ### `sync_state`
 
 - `peer_id`
@@ -425,6 +434,14 @@ Expected behavior:
 - The UI should still show team rank order and relative standing.
 - Central Command should always be able to view actual point values and final score calculations.
 
+Normative ranking rules (single source of truth for `mobile/src/domain/rankings.ts`, covered by `mobile/__tests__/rankings.test.ts`):
+
+1. A team's score equals the sum of `current_points` over the tasks it currently wins under the Winner Selection Algorithm. Reset, superseded, or post-game-end claims contribute zero.
+2. Scores derive exclusively from the state document produced by the Game State Builder; hiding points changes rendering only and never the underlying totals.
+3. Rank order sorts teams by score descending. Ties break in this fixed order: fewer tasks won, then lower `sort_order`, then lexicographically smaller team name. The resulting order must be identical on every device for the same event set.
+4. When `points_visible` is false, players see rank position and ordinal standing (for example `#2`), but the UI MUST NOT render raw point numbers on task cards, detail screens, or score rows. Qualitative gap hints (for example `close behind`) are permitted; numeric deltas are not.
+5. Phase boosts apply through `current_points` before scoring: each carried-forward unclaimed task gains the phase-start payload's `boostUnclaimedBy` once per elapsed phase-start event, so a task unclaimed through N phase starts is worth base points plus N times the boost.
+
 ### Task Categories
 
 Tasks should be grouped into categories in the UI for easier navigation.
@@ -467,6 +484,15 @@ Practical rules:
 - Incremental/vector-style updates are optional later optimizations. If incremental apply is used, every applied action still needs a well-defined way to recompute equivalent state from a full replay; full rebuild remains the source of truth.
 - The initial start package is a block of creation events that the builder applies like any other events.
 
+Normative replay contract (exposed to the UI through `mobile/src/hooks/useGameSession.ts`):
+
+1. Canonical order: events apply sorted by `(createdAt ASC, id ASC)` with byte-wise lexicographic `id` comparison. Quarantine guarantees every referenced dependency arrives before its dependent event, so a single ordered pass suffices; builders MUST NOT reorder by event type or source.
+2. Idempotency: dedupe by event UID before applying; replaying the same chain twice yields the identical document.
+3. Atomicity: a rebuild computes into a fresh document and swaps it in atomically; the UI never observes a partially applied log.
+4. Rebuild triggers: after every import batch, after any quarantine promotion, on cold start, and on manual "Rebuild state".
+5. Game end: after `admin_game_ended`, claim candidates with `claimedAt > payload.endedAt` are excluded; scores freeze when the collection window closes.
+6. Convergence check: for any fixed event set, two devices running this contract MUST produce deep-equal state documents; the test suite asserts this property directly.
+
 ### Validation and Quarantine
 
 Mesh delivery order is not guaranteed: different paths can deliver a claim before the task-creation or team-creation events it depends on. Rejecting such an event outright would silently destroy valid gameplay data, so validation distinguishes two failure classes:
@@ -503,6 +529,21 @@ When two devices later sync:
 3. The Game State Builder chooses one winner with deterministic rules: lowest `logicalSeq`, then earliest valid `claimedAt`, then lexicographic event ID. Only claims that passed the clock-sanity window are eligible, so a backdated timestamp cannot win outright (see Clock Discipline).
 4. Later admin resets can invalidate a specific claim; the builder then chooses the next earliest valid claim or reopens the task.
 5. When the top two candidate claims fall within the clock-skew tolerance of each other, Central Command can resolve the ambiguity with an `admin_claim_adjudicated` event naming the authoritative winner; adjudication overrides the automatic rule for that task.
+
+#### Winner Selection Algorithm (normative)
+
+This algorithm is the single source of truth for `mobile/src/domain/claimResolution.ts` and must be exercised exhaustively by `mobile/__tests__/claimResolution.test.ts`.
+
+Given one task, let CANDIDATES be its `claim_created` events, RESETS the applied `admin_claim_reset` payloads naming that task, and ADJUDICATION the applied `admin_claim_adjudicated` payload for that task, if any.
+
+1. Filter: keep only candidates whose referenced task and team were known-active at apply time and whose `claimedAt` passed the clock-sanity window at import.
+2. Invalidate: remove every candidate whose event ID appears in a RESETS entry's `claimEventId`.
+3. Adjudicate: if ADJUDICATION.`winningClaimEventId` survives steps 1-2, that claim is the winner; stop. An adjudication naming a removed or unknown claim has no effect.
+4. Order: sort survivors ascending by `payload.logicalSeq` (numeric), then `payload.claimedAt` (numeric), then envelope `id` (byte-wise lexicographic UTF-8).
+5. Winner: the first survivor wins and earns the task's `current_points`; all other claims remain stored as non-winning history.
+6. Reopen: if no survivors remain, the task is unclaimed with zero points awarded.
+
+Determinism requirements: event IDs are globally unique, so step 4 can never produce a full three-key tie; implementations MUST NOT add extra tie-breakers such as `received_at`, device ID, or insertion order. Any two devices holding the same event set MUST compute the identical winner.
 
 So the log stores history, and the state document stores the current interpretation of that history.
 
@@ -742,14 +783,16 @@ Relay rules:
 
 ### Message Types
 
-Recommended starting message set:
+Normative starting message set (implemented in `mobile/src/sync/peerSync.ts`). Every message is a JSON object with a required `type` field. Unknown types yield an `error` reply with code `unknown_message_type` without aborting the connection.
 
-- `hello`: user metadata, game ID, protocol version, event UID list and/or hard-write block IDs.
-- `request_events`: event UID / hard-write block ID list requested from a peer.
-- `events`: full event bodies or hard-write block contents.
-- `event_announcement`: newly available event UIDs or hard-write block IDs.
-- `admin_announcement`: optional high-priority admin event announcement.
-- `error`: protocol or validation failure.
+- `hello`: `{ type, userId, userName?, gameId, protocolVersion, knownEventUids: string[], hardWriteBlockIds: string[] }`. Sent immediately on connect by BOTH peers; neither side sends `request_events` until both hellos have arrived.
+- `request_events`: `{ type, ids: string[] }` where entries are event UIDs or hard-write block IDs. Responders chunk replies to at most 100 UIDs per `events` message.
+- `events`: `{ type, envelopes: EventEnvelope[], blocks?: Array<{ id, gameId, createdAt, eventIds }> }` carrying full bodies for the requested UIDs/blocks.
+- `event_announcement`: `{ type, ids: string[] }` emitted after importing new valid events or blocks; receivers diff against their inventory and reply with `request_events` for gaps.
+- `admin_announcement`: `{ type, ids: string[] }` optional high-priority variant processed identically to `event_announcement`.
+- `error`: `{ type, code, detail? }` with codes `unknown_message_type`, `malformed_json`, `game_mismatch`, `protocol_version_mismatch`.
+
+Compatibility rules: a `hello` major-version mismatch produces `error` code `protocol_version_mismatch` followed by a graceful disconnect; a `gameId` mismatch produces `game_mismatch` and skips event exchange. Completing a handshake updates `last_handshake_at` in `sync_state` even when zero events transfer.
 
 ## Offline and Consistency Model
 
@@ -908,6 +951,7 @@ flowchart TD
 - Admin auth tests proving valid `adminAuth` tags are accepted while tampered payloads, wrong secrets, and missing tags are rejected, rejected admin events are never relayed, and rotation overlap windows behave as specified.
 - Device/manual tests with at least three phones to verify multi-hop propagation.
 - State rebuild tests proving full replay matches the UI state document after conflicts and admin resets.
+- Runner requirement: all suites above execute under Jest via `mobile/jest.config.js` using `preset: react-native`, `testEnvironment: node` for pure-domain suites, and `transformIgnorePatterns` configured so `react-native` and mesh dependencies transform correctly. Every normative rule marked in this document maps to at least one named test file, so each subsequent code fix in `claimResolution.ts`, `schema.ts`/`migrate.ts`, `peerSync.ts`, `rankings.ts`, and `useGameSession.ts` is verifiable immediately after the edit.
 
 ## Open Questions
 
