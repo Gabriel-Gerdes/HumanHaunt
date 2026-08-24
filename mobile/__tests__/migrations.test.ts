@@ -120,7 +120,7 @@ describe('runMigrations', () => {
   });
 
   test('rebuilds from scratch when the stored version is outdated', async () => {
-    const fake = createFakeDb(99);
+    const fake = createFakeDb(Math.max(1, SCHEMA_VERSION - 1));
     fake.tables.add('tasks');
     fake.tables.add('devices');
 
