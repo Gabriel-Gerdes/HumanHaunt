@@ -366,12 +366,12 @@
       }
 
       function resetTask(rowNumber) {
-      function resetTask(rowNumber) {
         if (isBusy) {
           return;
         }
         if (!isAdmin()) {
           setStatus('Select admin first.');
+          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -406,6 +406,7 @@
         }
         if (!isAdmin()) {
           setStatus('Select admin first.');
+          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -449,6 +450,7 @@
         }
         if (!isAdmin()) {
           setStatus('Select admin first.');
+          return;
         }
 
         const task = lastState.tasks.find(item => item.rowNumber === rowNumber);
@@ -483,6 +485,7 @@
         }
         if (!isAdmin()) {
           setStatus('Select admin first.');
+          return;
         }
 
         const taskName = formData.get('taskName');
@@ -513,6 +516,7 @@
           return;
         }
         if (!isAdmin()) {
+          setStatus('Select admin first.');
           return;
         }
 

@@ -1,86 +1,69 @@
-import type { Task } from './types';
+import { filterTasksByTitleQuery } from '../src/domain/taskSearch';
 
-/**
- * Filters tasks by a case-insensitive substring match against title text.
- * An empty/whitespace query returns the original list unchanged.
- *
- * The query is always treated as LITERAL text: regex metacharacters such as
- * ( ) * + ? . ^ $ | [ ] { } \ are matched verbatim and never interpreted as
- * RegExp syntax, so arbitrary user input can never trigger a RegExp
- * SyntaxError. Implemented with String.prototype.includes over lowercased
- * values instead of constructing a RegExp from raw user input.
- */
-export function filterTasksByTitleQuery<T extends Pick<Task, 'title'>>(
-  tasks: T[],
-  query: string,
-): T[] {
-  const normalized = query.trim().toLowerCase();
-
-  if (!normalized) {
-    return tasks;
-  }
-
-  return tasks.filter(task => task.title.toLowerCase().includes(normalized));
+interface FixtureTask {
+  id: string;
+  title: string;
 }
 
-// ---------------------------------------------------------------------------
-// Tests (added for feedback #409)
-// ---------------------------------------------------------------------------
-
-interface TestTask extends Pick<Task, 'title'> {
-  id: number;
-}
-
-function makeTask(id: number, title: string): TestTask {
-  return { id, title };
-}
+const tasks: FixtureTask[] = [
+  { id: '1', title: 'Buy groceries' },
+  { id: '2', title: 'Walk the dog' },
+  { id: '3', title: 'buy concert tickets' },
+  { id: '4', title: 'Clean the kitchen' },
+];
 
 describe('filterTasksByTitleQuery', () => {
-  const tasks: TestTask[] = [
-    makeTask(1, 'Clean the attic'),
-    makeTask(2, 'Water the plants'),
-    makeTask(3, 'CLEAN the garage'),
-    makeTask(4, 'Repair fence'),
-  ];
+  it('filters tasks by a case-insensitive substring of the title', () => {
+    const result = filterTasksByTitleQuery(tasks, 'buy');
 
-  it('returns all tasks unchanged when the query is empty', () => {
-    expect(filterTasksByTitleQuery(tasks, '')).toEqual(tasks);
+    expect(result.map(task => task.id)).toEqual(['1', '3']);
   });
 
-  it('returns all tasks unchanged when the query is whitespace-only', () => {
-    expect(filterTasksByTitleQuery(tasks, '   \t\n  ')).toEqual(tasks);
+  it('matches substrings in the middle of titles', () => {
+    const result = filterTasksByTitleQuery(tasks, 'the');
+
+    expect(result.map(task => task.id)).toEqual(['2', '4']);
   });
 
-  it('matches titles case-insensitively', () => {
-    const result = filterTasksByTitleQuery(tasks, 'cLeAn');
-    expect(result).toEqual([tasks[0], tasks[2]]);
+  it('returns the original list unchanged for an empty query', () => {
+    const result = filterTasksByTitleQuery(tasks, '');
+
+    expect(result).toBe(tasks);
   });
 
-  it('treats regex metacharacters as literal text and never throws', () => {
-    const literalTasks: TestTask[] = [
-      makeTask(1, 'a(b)c'),
-      makeTask(2, 'plain'),
+  it('returns the original list unchanged for a whitespace-only query', () => {
+    const result = filterTasksByTitleQuery(tasks, '   ');
+
+    expect(result).toBe(tasks);
+  });
+
+  it('treats regex metacharacters as literal text instead of RegExp syntax', () => {
+    const specialTasks: FixtureTask[] = [
+      { id: 'a', title: 'C++ (advanced) notes' },
+      { id: 'b', title: 'backup of notes.txt' },
     ];
 
-    expect(() => filterTasksByTitleQuery(literalTasks, '(*)')).not.toThrow();
-    expect(filterTasksByTitleQuery(literalTasks, '(*)')).toEqual([]);
-    expect(filterTasksByTitleQuery(literalTasks, 'a(b)c')).toEqual([
-      literalTasks[0],
-    ]);
+    expect(() =>
+      filterTasksByTitleQuery(specialTasks, '(advanced'),
+    ).not.toThrow();
+
+    const result = filterTasksByTitleQuery(specialTasks, 'c++ (adv');
+    expect(result.map(task => task.id)).toEqual(['a']);
   });
 
-  it('returns an empty array when no title matches the query', () => {
-    expect(filterTasksByTitleQuery(tasks, 'zzz-no-such-title')).toEqual([]);
-  });
-
-  it('preserves original input order across multiple matches', () => {
-    const ordered: TestTask[] = [
-      makeTask(1, 'alpha beta'),
-      makeTask(2, 'gamma'),
-      makeTask(3, 'beta gamma'),
+  it('never throws on arbitrary user input containing regex metacharacters', () => {
+    const hostileQueries = [
+      '(', ')', '*', '+', '?', '.', '^', '$', '|', '[', ']', '{', '}', '\\\\',
     ];
 
-    const result = filterTasksByTitleQuery(ordered, 'BETA');
-    expect(result.map(task => task.title)).toEqual(['alpha beta', 'beta gamma']);
+    for (const query of hostileQueries) {
+      expect(() => filterTasksByTitleQuery(tasks, query)).not.toThrow();
+    }
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    const result = filterTasksByTitleQuery(tasks, 'nonexistent');
+
+    expect(result).toEqual([]);
   });
 });

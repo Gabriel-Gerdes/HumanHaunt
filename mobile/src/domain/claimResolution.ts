@@ -3,17 +3,18 @@ import type { ClaimEvent, Task, TaskWithWinner, Team } from './types';
 /**
  * First-claim-wins lockout rules:
  * 1. Duplicate event IDs are ignored (first occurrence kept).
- * 2. Winner selection orders candidates ascending by (logicalSeq, claimedAt, eventId):
- *    lowest logicalSeq wins, then earliest claimedAt, then byte-wise smallest event id.
+ * 2. The winning claim is the earliest by `claimedAt`.
+ * 3. If `claimedAt` ties, the byte-wise smaller event `id` wins.
+ *
+ * NOTE: a `(logicalSeq, claimedAt, eventId)` ordering is planned in
+ * docs/design-doc-v1.md (Clock Discipline), but `ClaimEvent` does not carry
+ * a `logicalSeq` field yet; that ordering must not ship until the payload,
+ * type, and creation path all support it.
  *
  * Conflicting claims can all remain in the append-only log. Only the derived
  * winner is used for task lockout / scoring.
  */
 export function compareClaimEvents(left: ClaimEvent, right: ClaimEvent) {
-  if (left.logicalSeq !== right.logicalSeq) {
-    return left.logicalSeq - right.logicalSeq;
-  }
-
   if (left.claimedAt !== right.claimedAt) {
     return left.claimedAt - right.claimedAt;
   }

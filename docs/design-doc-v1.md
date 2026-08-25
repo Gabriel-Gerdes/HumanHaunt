@@ -192,6 +192,8 @@ The production model should distinguish base points from current points so uncla
 
 ### `events`
 
+
+> **STATUS: PARTIALLY IMPLEMENTED.** The current schema stores claims only (`claim_events`); the generic append-only `events` table and its mandatory verified `hash` are not yet implemented (see Hash Verification and Duplicate Divergence).
 This should become the canonical append-only chain.
 
 - `id`: globally unique event UID.
@@ -206,6 +208,8 @@ This should become the canonical append-only chain.
 - `source`: `local`, `peer`, `seed`, or `admin`.
 
 ### `pending_events`
+
+> **STATUS: NOT YET IMPLEMENTED.** No `pending_events` table exists in `mobile/src/db/schema.ts`; quarantine/promotion logic is unimplemented.
 
 Quarantine queue for events that are structurally valid but cannot be applied yet because they depend on state this node has not received (see Validation and Quarantine).
 
@@ -240,6 +244,8 @@ Optional but useful later for diagnostics.
 - `peer_id`
 - `first_seen_at`
 - `last_seen_at`
+
+> **STATUS: MOSTLY NOT YET IMPLEMENTED.** The constraints below describe target behavior; the current schema has none of the events/pending_events/hard_write_blocks tables they reference.
 
 Cross-table schema constraints (enforced in `mobile/src/db/schema.ts` and covered by `mobile/src/db/migrate.ts` migration tests):
 
@@ -310,11 +316,11 @@ Validation rules:
 - Envelope `gameVersion` must match the current active game version on the device when the claim is created.
 - Duplicate event IDs are ignored only when the incoming body verifies against the stored event's mandatory `hash`; a duplicate UID carrying a different body fails verification and is recorded as a divergence instead of silently replacing or coexisting with the stored event (see Hash Verification and Duplicate Divergence).
 - If multiple teams claim the same task, the derived winner is the earliest valid claim ordered by `(logicalSeq, claimedAt, eventId)`, with event ID as the final deterministic tie-breaker.
-- `payload.claimedAt` must pass the clock-sanity window check described in Clock Discipline; out-of-window claims are quarantined with failure reason `clock_sanity_failed` instead of being trusted at face value.
-- `payload.logicalSeq` is REQUIRED on every claim event regardless of origin (locally created or peer-imported): it must be a non-negative integer carrying the originating device's persisted monotonic counter value at creation time. A claim event whose payload omits `logicalSeq` or carries a non-integer value is structurally malformed and rejected immediately - never stored, relayed, or quarantined.
-- `logicalSeq` must increase monotonically per originating device: each locally created event increments the sender's persisted counter exactly once, and importers adopt `max(localSeq, maxObservedPeerSeq + 1)` before their next local creation so values stay comparable across devices (see Clock Discipline).
-- Conflict resolution depends on this field: winner selection orders competing claims by `(logicalSeq, claimedAt, eventId)` (see Conflict Handling), so `logicalSeq` must be present and strictly increasing across each device's emitted events for ranking to remain deterministic.
-- Events that fail only because the referenced task or team is not known yet (out-of-order mesh arrival) are quarantined in `pending_events` instead of being dropped, and are re-validated automatically when new events or hard-write blocks are imported (see Validation and Quarantine).
+- NOT YET IMPLEMENTED: `payload.claimedAt` must pass the clock-sanity window check described in Clock Discipline; out-of-window claims are quarantined with failure reason `clock_sanity_failed` instead of being trusted at face value.
+- NOT YET IMPLEMENTED: `payload.logicalSeq` is REQUIRED on every claim event regardless of origin (locally created or peer-imported): it must be a non-negative integer carrying the originating device's persisted monotonic counter value at creation time. A claim event whose payload omits `logicalSeq` or carries a non-integer value is structurally malformed and rejected immediately - never stored, relayed, or quarantined.
+- NOT YET IMPLEMENTED: `logicalSeq` must increase monotonically per originating device: each locally created event increments the sender's persisted counter exactly once, and importers adopt `max(localSeq, maxObservedPeerSeq + 1)` before their next local creation so values stay comparable across devices (see Clock Discipline).
+- NOT YET IMPLEMENTED: Conflict resolution depends on this field: winner selection orders competing claims by `(logicalSeq, claimedAt, eventId)` (see Conflict Handling), so `logicalSeq` must be present and strictly increasing across each device's emitted events for ranking to remain deterministic.
+- NOT YET IMPLEMENTED: Events that fail only because the referenced task or team is not known yet (out-of-order mesh arrival) would be quarantined in a future `pending_events` table instead of being dropped, and are re-validated automatically when new events or hard-write blocks are imported (see Validation and Quarantine).
 
 Open decision: what happens when a team is removed after claims exist for that team? Options include keeping historical claims and scores, reassigning, or invalidating those claims. This needs an explicit rule before team-removal admin events ship.
 
@@ -328,7 +334,7 @@ Payload examples:
 
 - Add task: `{ "taskId": "...", "title": "...", "basePoints": 10, "sortOrder": 12 }`
 - Reset claim: `{ "taskId": "...", "claimEventId": "...", "reason": "false claim" }`
-- Adjudicate claim: `{ "taskId": "...", "winningClaimEventId": "...", "reason": "claims within clock-skew tolerance" }`
+- Not yet implemented — Adjudicate claim: `{ "taskId": "...", "winningClaimEventId": "...", "reason": "claims within clock-skew tolerance" }`
 - Rename team: `{ "teamId": "...", "name": "Team Ghost" }`
 - Delete task: `{ "taskId": "..." }`
 - Start phase: `{ "phaseId": "...", "boostUnclaimedBy": 5 }`
@@ -339,9 +345,9 @@ Payload examples:
 Validation rules:
 
 - Admin events must include the resulting `gameVersion`.
-- Admin events must carry a valid `adminAuth` HMAC tag (see Security Model). Events with a missing or failing tag are rejected and never stored or relayed.
+- NOT YET IMPLEMENTED: Admin events must carry a valid `adminAuth` HMAC tag (see Security Model). Events with a missing or failing tag are rejected and never stored or relayed.
 - Admin reset events should not delete historical claims. Instead, they should mark a specific claim event as invalid when building the current game state.
-- `admin_claim_adjudicated` names the authoritative winning claim for a task and overrides the automatic `(logicalSeq, claimedAt, eventId)` ordering for that task when applied (see Clock Discipline and Conflict Handling).
+- NOT YET IMPLEMENTED: `admin_claim_adjudicated` names the authoritative winning claim for a task and overrides the automatic `(logicalSeq, claimedAt, eventId)` ordering for that task when applied (see Clock Discipline and Conflict Handling).
 - Admin event ordering should be deterministic. Prefer `created_at`, then event ID.
 - Admin events whose referenced entities (task, team, phase, category) are not yet known on this node are quarantined like claim events, except that authentication failures (`adminAuth`) are always outright rejections, never quarantine candidates.
 
@@ -497,6 +503,8 @@ Normative replay contract (exposed to the UI through `mobile/src/hooks/useGameSe
 
 ### Validation and Quarantine
 
+> **STATUS: NOT YET IMPLEMENTED.** No quarantine queue, dependency re-validation, TTL expiry, or poison state exists in code today; unknown-dependency events are currently rejected outright.
+
 Mesh delivery order is not guaranteed: different paths can deliver a claim before the task-creation or team-creation events it depends on. Rejecting such an event outright would silently destroy valid gameplay data, so validation distinguishes two failure classes:
 
 1. **Structurally malformed** (bad envelope shape, unknown type, missing required fields, missing or mismatching `hash`, failing `adminAuth` tag): rejected immediately, never stored, never relayed.
@@ -512,6 +520,8 @@ Quarantine behavior:
 
 ### Hash Verification and Duplicate Divergence
 
+> **STATUS: NOT YET IMPLEMENTED.** Event envelopes have no `hash` field yet and no import path verifies one; dedupe is by UID only, without divergence detection or a divergence log.
+
 Event UIDs are minted by originating devices, so a UID alone proves nothing about the body carrying it. Without body verification, a griefer who observes a victim's `event_announcement` could race a forged body under the same UID, and mesh nodes would keep whichever copy arrived first, permanently splitting game state across the mesh. V1 closes this hole by making the envelope `hash` mandatory and verified on every import path:
 
 1. **Canonical digest:** `hash` is a lowercase hex SHA-256 digest over the same canonical serialization defined for `adminAuth` (exactly the fields `createdAt`, `gameId`, `gameVersion`, `id`, `payload`, `type`, `userId`; sorted keys; compact JSON; UTF-8), excluding the `hash` field itself. Locally created events are hashed at creation time.
@@ -521,6 +531,8 @@ Event UIDs are minted by originating devices, so a UID alone proves nothing abou
 5. **Residual risk:** hash verification makes divergent duplicates detectable and non-silent, but two disconnected clusters could each hold a different body under one UID until hosts reconcile them. V2 should evolve to content-addressed UIDs (UID equals the digest of the canonical body), which makes forging a rival body under a victim's UID impossible rather than merely detectable.
 
 ### Clock Discipline
+
+> **STATUS: NOT YET IMPLEMENTED.** `ClaimEvent` carries no `logicalSeq`, there is no persisted per-device counter, no clock-sanity window check, and no `admin_claim_adjudicated` event type. Winner selection is `(claimedAt, byte-wise eventId)` only.
 
 Winner selection depends on `claimedAt`, but offline devices run unsynchronized clocks. Without defenses, a skewed or deliberately backdated clock could win every conflict, undermining lockout fairness. V1 therefore layers three mechanisms while keeping the protocol simple:
 
