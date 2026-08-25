@@ -20,6 +20,8 @@ type UseGameSessionResult = {
   syncStatus: string;
   claimedCount: number;
   selectedTeam?: Team;
+  /** Load/bootstrap failure message; set when the game state could not be loaded. */
+  error?: string;
   handleRefresh: () => Promise<void>;
   handleSelectTeam: (teamId: string) => Promise<void>;
   handleClaim: (taskId: string) => Promise<void>;
@@ -33,6 +35,7 @@ export function useGameSession(): UseGameSessionResult {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncStatus, setSyncStatus] = useState('Peer sync not started');
+  const [error, setError] = useState<string>();
   const syncServiceRef = useRef<PeerSyncService | undefined>(undefined);
   const syncDeviceId = gameState?.device.id;
   const syncDeviceName = gameState?.device.name;
@@ -52,8 +55,13 @@ export function useGameSession(): UseGameSessionResult {
   );
 
   const loadGame = useCallback(async () => {
-    const state = await getGameState();
-    setGameState(state);
+    try {
+      const state = await getGameState();
+      setGameState(state);
+      setError(undefined);
+    } catch (loadError) {
+      setError(String(loadError));
+    }
   }, []);
 
   useEffect(() => {
@@ -67,8 +75,9 @@ export function useGameSession(): UseGameSessionResult {
         if (mounted) {
           setGameState(state);
         }
-      } catch (error) {
-        Alert.alert('Database error', String(error));
+      } catch (bootstrapError) {
+        setError(String(bootstrapError));
+        Alert.alert('Database error', String(bootstrapError));
       } finally {
         if (mounted) {
           setLoading(false);
@@ -179,6 +188,7 @@ export function useGameSession(): UseGameSessionResult {
     syncStatus,
     claimedCount,
     selectedTeam,
+    error,
     handleRefresh,
     handleSelectTeam,
     handleClaim,

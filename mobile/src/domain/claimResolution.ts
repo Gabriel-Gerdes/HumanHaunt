@@ -65,9 +65,33 @@ export function buildTaskViews(
   claimEvents: ClaimEvent[],
 ): TaskWithWinner[] {
   const teamById = new Map(teams.map(team => [team.id, team]));
+  const gameId = tasks[0]?.gameId;
 
-  return tasks.map(task => {
-    const taskClaims = getClaimsForTask(claimEvents, task.id);
+  // Claims from a different game must never win or count toward a task view.
+  const gameClaims =
+    gameId === undefined
+      ? claimEvents
+      : claimEvents.filter(event => event.gameId === gameId);
+
+  const sortedTasks = [...tasks].sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) {
+      return left.sortOrder - right.sortOrder;
+    }
+
+    // Byte-wise id tie-break keeps ordering deterministic across devices.
+    if (left.id < right.id) {
+      return -1;
+    }
+
+    if (left.id > right.id) {
+      return 1;
+    }
+
+    return 0;
+  });
+
+  return sortedTasks.map(task => {
+    const taskClaims = getClaimsForTask(gameClaims, task.id);
     const winningClaim = getWinningClaim(taskClaims);
 
     return {
