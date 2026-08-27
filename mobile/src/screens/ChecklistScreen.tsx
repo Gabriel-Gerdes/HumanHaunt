@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   RefreshControl,
-  ScrollView,
   Text,
   View,
 } from 'react-native';
@@ -29,6 +29,7 @@ export function ChecklistScreen() {
     syncStatus,
     claimedCount,
     selectedTeam,
+    error,
     handleRefresh,
     handleSelectTeam,
     handleClaim,
@@ -82,6 +83,33 @@ export function ChecklistScreen() {
     return filterTasksByTitleQuery(categoryTasks, searchQuery);
   }, [gameState, searchQuery, selectedCategoryId]);
 
+  const renderTaskItem = useCallback(
+    ({ item }: { item: (typeof visibleTasks)[number] }) => (
+      <TaskRow task={item} selectedTeam={selectedTeam} onClaim={handleClaim} />
+    ),
+    [handleClaim, selectedTeam],
+  );
+
+  if (!loading && !gameState) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyTitle}>Could not load game</Text>
+        <Text style={styles.emptyBody}>
+          {typeof error === 'string' && error
+            ? error
+            : 'Human Haunt data failed to load on this device.'}
+        </Text>
+        <Text
+          style={styles.loadingText}
+          onPress={handleRefresh}
+          accessibilityRole="button"
+          accessibilityLabel="Retry loading the game">
+          Retry
+        </Text>
+      </View>
+    );
+  }
+
   if (loading || !gameState || !selectedCategoryId) {
     return (
       <View style={styles.centered}>
@@ -95,15 +123,8 @@ export function ChecklistScreen() {
     ? 'No tasks match your search.'
     : 'No tasks in this category.';
 
-  return (
-    <ScrollView
-      contentInsetAdjustmentBehavior="automatic"
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-      }
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled">
+  const listHeader = (
+    <>
       <View style={styles.hero}>
         <Text style={styles.eyebrow}>Local game</Text>
         <Text style={styles.title}>{gameState.game.name}</Text>
@@ -148,21 +169,29 @@ export function ChecklistScreen() {
           </Text>
         </View>
       ) : null}
+    </>
+  );
 
-      {visibleTasks.length === 0 ? (
-        <View style={styles.emptyCategory}>
-          <Text style={styles.emptyCategoryText}>{emptyMessage}</Text>
-        </View>
-      ) : (
-        visibleTasks.map(task => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            selectedTeam={selectedTeam}
-            onClaim={handleClaim}
-          />
-        ))
-      )}
-    </ScrollView>
+  const listEmpty = (
+    <View style={styles.emptyCategory}>
+      <Text style={styles.emptyCategoryText}>{emptyMessage}</Text>
+    </View>
+  );
+
+  return (
+    <FlatList
+      data={visibleTasks}
+      keyExtractor={task => task.id}
+      renderItem={renderTaskItem}
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={listEmpty}
+      contentInsetAdjustmentBehavior="automatic"
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+      }
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+    />
   );
 }

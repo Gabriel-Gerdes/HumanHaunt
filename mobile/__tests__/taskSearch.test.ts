@@ -1,47 +1,69 @@
 import { filterTasksByTitleQuery } from '../src/domain/taskSearch';
-import { DEFAULT_GAME_ID } from '../src/domain/seed';
-import type { Task } from '../src/domain/types';
 
-function task(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-a',
-    gameId: DEFAULT_GAME_ID,
-    categoryId: 'category-photo',
-    title: 'Photo Booth',
-    sortOrder: 1,
-    active: true,
-    basePoints: 10,
-    currentPoints: 10,
-    pointsVisible: true,
-    ...overrides,
-  };
+interface FixtureTask {
+  id: string;
+  title: string;
 }
 
-const tasks = [
-  task({ id: 'task-photo', title: 'Photo Booth' }),
-  task({ id: 'task-mermaid', title: 'Norfolk Mermaid', sortOrder: 2 }),
-  task({ id: 'task-pizza', title: 'Tiny Pizza Car', sortOrder: 3 }),
+const tasks: FixtureTask[] = [
+  { id: '1', title: 'Buy groceries' },
+  { id: '2', title: 'Walk the dog' },
+  { id: '3', title: 'buy concert tickets' },
+  { id: '4', title: 'Clean the kitchen' },
 ];
 
 describe('filterTasksByTitleQuery', () => {
-  test('returns all tasks when the query is empty or whitespace', () => {
-    expect(filterTasksByTitleQuery(tasks, '')).toEqual(tasks);
-    expect(filterTasksByTitleQuery(tasks, '   ')).toEqual(tasks);
+  it('filters tasks by a case-insensitive substring of the title', () => {
+    const result = filterTasksByTitleQuery(tasks, 'buy');
+
+    expect(result.map(task => task.id)).toEqual(['1', '3']);
   });
 
-  test('matches titles case-insensitively by substring', () => {
-    expect(filterTasksByTitleQuery(tasks, 'photo').map(item => item.id)).toEqual([
-      'task-photo',
-    ]);
-    expect(filterTasksByTitleQuery(tasks, 'MERMAID').map(item => item.id)).toEqual([
-      'task-mermaid',
-    ]);
-    expect(filterTasksByTitleQuery(tasks, 'pi').map(item => item.id)).toEqual([
-      'task-pizza',
-    ]);
+  it('matches substrings in the middle of titles', () => {
+    const result = filterTasksByTitleQuery(tasks, 'the');
+
+    expect(result.map(task => task.id)).toEqual(['2', '4']);
   });
 
-  test('returns an empty list when nothing matches', () => {
-    expect(filterTasksByTitleQuery(tasks, 'dragon')).toEqual([]);
+  it('returns the original list unchanged for an empty query', () => {
+    const result = filterTasksByTitleQuery(tasks, '');
+
+    expect(result).toBe(tasks);
+  });
+
+  it('returns the original list unchanged for a whitespace-only query', () => {
+    const result = filterTasksByTitleQuery(tasks, '   ');
+
+    expect(result).toBe(tasks);
+  });
+
+  it('treats regex metacharacters as literal text instead of RegExp syntax', () => {
+    const specialTasks: FixtureTask[] = [
+      { id: 'a', title: 'C++ (advanced) notes' },
+      { id: 'b', title: 'backup of notes.txt' },
+    ];
+
+    expect(() =>
+      filterTasksByTitleQuery(specialTasks, '(advanced'),
+    ).not.toThrow();
+
+    const result = filterTasksByTitleQuery(specialTasks, 'c++ (adv');
+    expect(result.map(task => task.id)).toEqual(['a']);
+  });
+
+  it('never throws on arbitrary user input containing regex metacharacters', () => {
+    const hostileQueries = [
+      '(', ')', '*', '+', '?', '.', '^', '$', '|', '[', ']', '{', '}', '\\\\',
+    ];
+
+    for (const query of hostileQueries) {
+      expect(() => filterTasksByTitleQuery(tasks, query)).not.toThrow();
+    }
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    const result = filterTasksByTitleQuery(tasks, 'nonexistent');
+
+    expect(result).toEqual([]);
   });
 });

@@ -51,3 +51,6 @@ mobile/vendor/bundle/
 
 # Gradle cache override used locally to avoid Windows path length issues
 gradle-cache/
+
+# PrizmForge local data
+.PrizmForge/
